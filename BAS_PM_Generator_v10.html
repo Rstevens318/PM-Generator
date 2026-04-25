@@ -1,0 +1,2592 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BAS PM Checklist Generator</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<!-- compromise: lightweight in-browser NLP for verb/noun/phrase extraction (~250KB) -->
+<script src="https://unpkg.com/compromise@14.14.0/builds/compromise.min.js"></script>
+<!-- Transformers.js: runs MiniLM sentence-embedding model locally in the browser.
+     First load downloads ~25MB of model weights from Hugging Face CDN and caches
+     them in IndexedDB; subsequent loads are instant and fully offline. -->
+<script type="module">
+  import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js';
+  // Cache model in browser IndexedDB so subsequent page loads work offline
+  env.allowLocalModels = false;
+  env.useBrowserCache  = true;
+  // Expose to global scope so the rest of the (non-module) script can use it
+  window._transformers = { pipeline };
+</script>
+<style>
+/* Use system fonts — Arial/Calibri, no web fonts */
+
+/* Suppress browser-printed URL, date, page title in header/footer */
+@page { margin: 14mm 12mm; }
+
+:root {
+  --green: #3d8b2f;
+  --green-light: #e8f5e4;
+  --green-mid: #b8ddb0;
+  --green-dark: #1e5c15;
+  --orange: #d4622a;
+  --orange-light: #fdf0ea;
+  --blue: #1a7db5;
+  --blue-light: #e8f4fb;
+  --purple: #7a3590;
+  --purple-light: #f3eaf6;
+  --teal: #2a7a7a;
+  --bg: #f5f6f4;
+  --surface: #ffffff;
+  --surface2: #f9faf8;
+  --border: #e2e6df;
+  --border-dark: #c8cfc4;
+  --text: #1a2318;
+  --text-mid: #4a5c46;
+  --text-light: #7a8c76;
+  --shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.05);
+  --shadow-md: 0 4px 12px rgba(0,0,0,0.08), 0 2px 4px rgba(0,0,0,0.05);
+  --radius: 10px;
+  --radius-sm: 6px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Calibri', 'Arial', sans-serif;
+  min-height: 100vh;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* ── HEADER ── */
+header {
+  background: var(--green-dark);
+  padding: 16px 40px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+.logo-wrap {
+  width: 40px; height: 40px;
+  background: rgba(255,255,255,0.15);
+  border-radius: 8px;
+  display: grid; place-items: center;
+  font-size: 18px;
+}
+.header-title { font-size: 18px; font-weight: 600; color: #fff; letter-spacing: -0.3px; }
+.header-sub { font-size: 12px; color: rgba(255,255,255,0.6); margin-top: 1px; }
+.header-badge {
+  margin-left: auto;
+  background: rgba(255,255,255,0.15);
+  border-radius: 20px;
+  padding: 4px 12px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.85);
+  font-weight: 500;
+  display: flex; align-items: center; gap: 6px;
+}
+.hbdot { width: 6px; height: 6px; background: #7ddc6a; border-radius: 50%; animation: pulse 2s ease-in-out infinite; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+/* ── LAYOUT ── */
+.container { max-width: 1060px; margin: 0 auto; padding: 32px 20px; }
+
+/* ── UPLOAD SECTION ── */
+.upload-section {
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 28px;
+  margin-bottom: 16px;
+}
+.section-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--text-light);
+  margin-bottom: 16px;
+}
+.upload-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+@media(max-width:680px){ .upload-grid { grid-template-columns: 1fr; } }
+
+.uzone {
+  border: 2px dashed var(--border-dark);
+  border-radius: var(--radius-sm);
+  background: var(--surface2);
+  padding: 22px 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.2s;
+  position: relative;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+  min-height: 140px;
+}
+.uzone:hover { border-color: var(--green); background: var(--green-light); }
+.uzone.over  { border-color: var(--green); background: var(--green-light); transform: scale(1.01); }
+.uzone.loaded { border-style: solid; border-color: var(--green); background: var(--green-light); }
+.uzone-accent { position: absolute; top: 0; left: 0; right: 0; height: 3px; border-radius: 4px 4px 0 0; }
+.uzone-icon { font-size: 26px; margin-bottom: 2px; }
+.uzone-label { font-size: 13px; font-weight: 600; color: var(--text); }
+.uzone-sub { font-size: 11px; color: var(--text-light); }
+.uzone-pill {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.5px;
+  padding: 2px 8px; border-radius: 20px;
+  background: var(--border); color: var(--text-mid);
+  text-transform: uppercase; margin-top: 2px;
+}
+.uzone.loaded .uzone-pill { background: var(--green); color: #fff; }
+.hidden { display: none; }
+
+.upload-note { font-size: 12px; color: var(--text-light); text-align: center; margin-top: 12px; }
+.upload-note strong { color: var(--orange); }
+
+/* ── INFO FORM ── */
+#info-form {
+  display: none;
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 28px;
+  margin-bottom: 16px;
+}
+.form-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; margin-bottom: 20px; }
+@media(max-width:680px){ .form-grid { grid-template-columns: 1fr; } }
+.field label { display: block; font-size: 12px; font-weight: 500; color: var(--text-mid); margin-bottom: 5px; }
+.field input {
+  width: 100%;
+  background: var(--surface2);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  padding: 9px 12px;
+  outline: none;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+.field input:focus { border-color: var(--green); box-shadow: 0 0 0 3px rgba(61,139,47,0.1); }
+
+.btn-gen {
+  width: 100%;
+  background: var(--green);
+  border: none;
+  border-radius: var(--radius-sm);
+  color: #fff;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: 0 2px 6px rgba(61,139,47,0.3);
+}
+.btn-gen:hover { background: var(--green-dark); box-shadow: 0 4px 10px rgba(61,139,47,0.35); transform: translateY(-1px); }
+.btn-gen:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+/* ── PROGRESS ── */
+#progress {
+  display: none;
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 36px;
+  text-align: center;
+  margin-bottom: 16px;
+}
+.prog-title { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 14px; }
+.prog-track { background: var(--border); height: 6px; border-radius: 3px; overflow: hidden; margin-bottom: 10px; }
+.prog-fill { height: 100%; background: var(--green); border-radius: 3px; width: 0%; transition: width 0.4s ease; }
+.prog-log { font-size: 12px; color: var(--text-light); }
+
+/* ── ERROR ── */
+.err-box {
+  background: #fef2f0; border: 1.5px solid #f5a090; border-radius: var(--radius-sm);
+  padding: 12px 16px; font-size: 13px; color: var(--orange); margin-top: 12px; display: none;
+}
+
+/* ── CHECKLIST OUTPUT ── */
+#output { display: none; }
+
+.cl-header {
+  background: var(--green-dark);
+  border-radius: var(--radius) var(--radius) 0 0;
+  padding: 24px 28px;
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+}
+.cl-title { font-size: 22px; font-weight: 600; color: #fff; letter-spacing: -0.3px; }
+.cl-meta { font-size: 12px; color: #a8d4a0; margin-top: 3px; }
+.btn-print {
+  background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3);
+  border-radius: var(--radius-sm); color: #fff; font-family: inherit; font-size: 12px;
+  font-weight: 500; padding: 8px 16px; cursor: pointer; transition: all 0.2s; white-space: nowrap;
+}
+.btn-print:hover { background: rgba(255,255,255,0.25); }
+
+.progress-bar-row {
+  background: var(--surface);
+  border-left: 1px solid var(--border); border-right: 1px solid var(--border);
+  padding: 14px 28px; display: flex; align-items: center; gap: 16px; margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.pb-label { font-size: 13px; font-weight: 500; color: var(--text-mid); white-space: nowrap; }
+.pb-label span { color: var(--green); font-weight: 700; font-size: 16px; }
+.pb-track { flex: 1; min-width: 100px; height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; }
+.pb-fill { height: 100%; background: var(--green); border-radius: 3px; transition: width 0.4s; }
+.pb-pct { font-size: 13px; font-weight: 600; color: var(--green); white-space: nowrap; }
+
+/* ── SECTIONS ── */
+.section {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 10px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.sec-head {
+  padding: 14px 20px; display: flex; align-items: center; gap: 12px;
+  cursor: pointer; user-select: none; transition: background 0.15s;
+}
+.sec-head:hover { background: var(--surface2); }
+.sec-pill {
+  width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+}
+.sec-name { font-size: 15px; font-weight: 600; color: var(--text); flex: 1; }
+.sec-badge {
+  font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px;
+  background: var(--surface2); color: var(--text-light);
+}
+.sec-chev { color: var(--text-light); font-size: 12px; transition: transform 0.2s; }
+.section.collapsed .sec-chev { transform: rotate(-90deg); }
+.section.collapsed .sec-body { display: none; }
+.sec-divider { height: 1px; background: var(--border); margin: 0; }
+
+/* SUBSECTION */
+.subsec {
+  padding: 8px 20px 8px 28px;
+  background: var(--surface2);
+  border-bottom: 1px solid var(--border);
+  font-size: 11px; font-weight: 600; letter-spacing: 0.8px;
+  text-transform: uppercase; color: var(--text-light);
+}
+
+/* ── CHECK ITEMS ── */
+.item {
+  padding: 12px 20px 12px 20px;
+  border-bottom: 1px solid #f0f2ee;
+  display: grid;
+  grid-template-columns: 24px 1fr;
+  gap: 10px;
+  align-items: start;
+  transition: background 0.12s;
+}
+.item:last-of-type { border-bottom: none; }
+.item:hover { background: #fafbf9; }
+
+/* FIX 1: checked item — subtle bg change only, NO strikethrough */
+.item.done { background: #f4faf2; }
+.item.done .item-text { color: var(--text-mid); }
+
+.cb {
+  width: 18px; height: 18px;
+  border: 2px solid var(--border-dark);
+  border-radius: 4px;
+  background: var(--surface);
+  cursor: pointer;
+  display: grid; place-items: center;
+  margin-top: 2px;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.cb:hover { border-color: var(--green); }
+.cb.on {
+  background: var(--green);
+  border-color: var(--green);
+  box-shadow: 0 1px 4px rgba(61,139,47,0.4);
+}
+.cb.on::after { content: '✓'; color: #fff; font-size: 12px; font-weight: 700; line-height: 1; }
+
+.item-text { font-size: 12px; line-height: 1.55; color: var(--text); }
+.item-info-label { font-size: 11px; font-weight: 500; color: var(--text-light); margin-bottom: 4px; }
+.item-info-input {
+  background: var(--surface2); border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text);
+  font-family: inherit; font-size: 13px; width: 100%; padding: 6px 10px; outline: none;
+  transition: border-color 0.2s;
+}
+.item-info-input:focus { border-color: var(--green); }
+
+/* ── DETAIL LINES inside check items ── */
+.item-details { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+.item-detail-conditions,
+.item-detail-outcomes,
+.item-detail-line {
+  font-size: 12px;
+  color: var(--text-mid);
+  line-height: 1.5;
+  padding: 4px 8px;
+  border-left: 2px solid var(--border-dark);
+  background: var(--surface2);
+  border-radius: 0 4px 4px 0;
+}
+.item-detail-conditions { border-left-color: var(--orange); }
+.item-detail-outcomes   { border-left-color: var(--green); }
+.detail-tag {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+  margin-right: 6px; opacity: 0.7;
+}
+
+/* ── SCREENSHOT ZONE ── */
+.ss-zone {
+  border: 1.5px dashed var(--border-dark);
+  border-radius: var(--radius-sm);
+  background: var(--surface2);
+  margin-top: 8px;
+  transition: border-color 0.2s, background 0.2s;
+  overflow: hidden;
+}
+.ss-zone:hover  { border-color: var(--blue); }
+.ss-zone.over   { border-color: var(--blue); background: var(--blue-light); }
+
+/* Empty state — click/drop prompt */
+.ss-empty {
+  padding: 10px 14px;
+  display: flex; align-items: center; gap: 8px;
+  cursor: pointer;
+}
+.ss-empty:hover { background: var(--blue-light); }
+.ss-label { font-size: 11px; color: var(--text-light); flex: 1; }
+
+/* Loaded state */
+.ss-zone.has-img { border-style: solid; border-color: var(--green); background: #000; }
+
+/* Toolbar shown when images loaded */
+.ss-toolbar {
+  display: flex; align-items: center; gap: 6px;
+  background: rgba(0,0,0,0.7);
+  padding: 5px 8px;
+  flex-wrap: wrap;
+}
+.ss-tab {
+  font-size: 10px; padding: 2px 8px; border-radius: 3px; cursor: pointer;
+  background: rgba(255,255,255,0.15); color: #fff; border: 1px solid rgba(255,255,255,0.2);
+  transition: background 0.15s; white-space: nowrap;
+}
+.ss-tab:hover   { background: rgba(255,255,255,0.3); }
+.ss-tab.active  { background: var(--green); border-color: var(--green); }
+.ss-toolbar-right { margin-left: auto; display: flex; gap: 5px; align-items: center; }
+.ss-btn {
+  font-size: 10px; padding: 2px 8px; border-radius: 3px; cursor: pointer;
+  background: rgba(255,255,255,0.15); color: #fff; border: 1px solid rgba(255,255,255,0.2);
+  transition: background 0.15s; white-space: nowrap;
+}
+.ss-btn:hover { background: rgba(255,255,255,0.3); }
+.ss-btn.danger:hover { background: rgba(220,50,50,0.6); border-color: rgba(220,50,50,0.8); }
+
+/* Image viewer — resizable vertically like textarea */
+.ss-viewer {
+  width: 100%;
+  min-height: 180px;
+  height: 260px;
+  resize: vertical;
+  overflow: hidden;
+  display: flex; align-items: center; justify-content: center;
+  background: #111;
+  position: relative;
+  cursor: default;
+}
+.ss-viewer img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+  user-select: none;
+}
+.ss-resize-hint {
+  position: absolute; bottom: 3px; right: 5px;
+  font-size: 9px; color: rgba(255,255,255,0.35);
+  pointer-events: none; user-select: none;
+}
+
+/* Print: show images full width */
+
+/* ── VALIDATION TABLES ── */
+.tbl-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 12px; }
+th {
+  font-size: 11px; font-weight: 600; letter-spacing: 0.5px; text-transform: uppercase;
+  color: var(--text-light); padding: 10px 14px; text-align: left;
+  border-bottom: 2px solid var(--border); background: var(--surface2);
+}
+td {
+  padding: 9px 14px; border-bottom: 1px solid #f0f2ee;
+  color: var(--text); font-size: 13px;
+}
+tr:hover td { background: #fafbf9; }
+.tbl-input {
+  background: transparent; border: none; border-bottom: 1.5px solid var(--border);
+  color: var(--text); font-family: inherit; font-size: 13px;
+  width: 90px; padding: 2px 4px; outline: none; transition: border-color 0.2s;
+}
+.tbl-input:focus { border-bottom-color: var(--green); }
+.td-name { font-weight: 500; color: var(--text); }
+
+/* ── TECH NOTES ── */
+.tn {
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--surface2);
+}
+.tn label { font-size: 11px; font-weight: 600; color: var(--text-light); display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+.tn textarea {
+  width: 100%; background: var(--surface); border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text); font-family: inherit;
+  font-size: 13px; padding: 8px 10px; resize: vertical; min-height: 56px; outline: none; transition: border-color 0.2s;
+}
+.tn textarea:focus { border-color: var(--green); }
+
+/* ── SIGN-OFF ── */
+.signoff {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 24px 28px; margin-top: 12px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 24px;
+}
+@media(max-width:540px){ .signoff { grid-template-columns: 1fr; } }
+.so-field label { font-size: 11px; font-weight: 600; color: var(--text-light); display: block; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.5px; }
+.so-field input {
+  width: 100%; background: var(--surface2); border: none; border-bottom: 2px solid var(--border-dark);
+  color: var(--text); font-family: inherit; font-size: 14px; padding: 6px 0; outline: none; transition: border-color 0.2s;
+}
+.so-field input:focus { border-bottom-color: var(--green); }
+
+/* ── PRINT ── */
+@media print {
+  /* Remove browser default header/footer (URL, date, page number) */
+  @page {
+    margin: 14mm 12mm;
+    size: letter;
+  }
+
+  /* Base reset — Calibri/Arial 11pt everywhere */
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    font-family: 'Calibri', 'Arial', sans-serif !important;
+  }
+  body { background: #fff !important; color: #000 !important; font-size: 11pt !important; }
+
+  /* Hide everything that isn't the checklist output */
+  header, .upload-section, #info-form, #progress, .err-box,
+  .btn-print, .upload-note, .hbadge { display: none !important; }
+
+  /* Remove shadows, rounded corners, transitions for clean print */
+  .section, .signoff, .progress-bar-row, .cl-header {
+    box-shadow: none !important;
+    border-radius: 0 !important;
+  }
+
+  /* Checklist header — solid green bar */
+  .cl-header {
+    background: #1e5c15 !important;
+    color: #fff !important;
+    padding: 10pt 14pt !important;
+    margin-bottom: 0 !important;
+    border: none !important;
+    page-break-inside: avoid;
+  }
+  .cl-title {
+    font-size: 15pt !important;
+    font-weight: 700 !important;
+    color: #fff !important;
+  }
+  /* FIX: meta line — force white, solid opacity, no transparency */
+  .cl-meta {
+    font-size: 9pt !important;
+    color: #ffffff !important;
+    opacity: 1 !important;
+    font-weight: 400 !important;
+    margin-top: 3pt !important;
+    display: block !important;
+  }
+
+  /* Progress bar row */
+  .progress-bar-row {
+    border: 1px solid #ccc !important;
+    border-top: none !important;
+    padding: 5pt 14pt !important;
+    margin-bottom: 8pt !important;
+    background: #f8f8f8 !important;
+  }
+  .pb-label, .pb-pct { font-size: 9pt !important; color: #333 !important; }
+  .pb-track { background: #ddd !important; height: 4px !important; }
+  .pb-fill  { background: #3d8b2f !important; }
+
+  /* Sections */
+  .section {
+    border: 1px solid #ccc !important;
+    margin-bottom: 6pt !important;
+    page-break-inside: avoid;
+    background: #fff !important;
+  }
+
+  .sec-head {
+    background: #f0f4ee !important;
+    padding: 6pt 10pt !important;
+    border-bottom: 1px solid #ccc !important;
+    page-break-inside: avoid;
+    page-break-after: avoid;
+  }
+  .sec-pill  { width: 8px !important; height: 8px !important; }
+  .sec-name  { font-size: 11pt !important; font-weight: 700 !important; color: #000 !important; }
+  .sec-badge { font-size: 8pt  !important; color: #555 !important; background: #e0e0e0 !important; border-radius: 10px !important; }
+  .sec-chev  { display: none !important; }
+  .sec-divider { border-top: 1px solid #ccc !important; }
+
+  /* Never hide collapsed section bodies when printing */
+  .section.collapsed .sec-body { display: block !important; }
+
+  /* Subsection headers */
+  .subsec {
+    background: #f5f5f5 !important;
+    color: #333 !important;
+    font-size: 8pt !important;
+    font-weight: 700 !important;
+    padding: 3pt 10pt !important;
+    border-bottom: 1px solid #ddd !important;
+    letter-spacing: 0.5px !important;
+  }
+
+  /* Check items */
+  .item {
+    padding: 5pt 10pt 5pt 10pt !important;
+    border-bottom: 1px solid #eee !important;
+    page-break-inside: avoid;
+    background: #fff !important;
+    display: grid !important;
+    grid-template-columns: 16px 1fr !important;
+    gap: 8px !important;
+    align-items: start !important;
+  }
+  .item.done { background: #fff !important; }
+  .item-text {
+    font-size: 11pt !important;
+    color: #000 !important;
+    line-height: 1.4 !important;
+    font-weight: 400 !important;
+  }
+
+  /* Checkbox — clean square */
+  .cb {
+    width: 13px !important;
+    height: 13px !important;
+    border: 1.5px solid #444 !important;
+    border-radius: 2px !important;
+    background: #fff !important;
+    box-shadow: none !important;
+    margin-top: 2pt !important;
+  }
+  .cb.on {
+    background: #3d8b2f !important;
+    border-color: #3d8b2f !important;
+  }
+  .cb.on::after { content: '✓' !important; color: #fff !important; font-size: 9pt !important; }
+
+  /* Detail lines (conditions / outcomes) */
+  .item-details { margin-top: 3pt !important; gap: 2pt !important; }
+  .item-detail-conditions,
+  .item-detail-outcomes,
+  .item-detail-line {
+    font-size: 9pt !important;
+    color: #222 !important;
+    padding: 2pt 6pt !important;
+    background: #f8f8f8 !important;
+    border-left: 2px solid #ccc !important;
+    line-height: 1.4 !important;
+  }
+  .item-detail-conditions { border-left-color: #d4622a !important; }
+  .item-detail-outcomes   { border-left-color: #3d8b2f !important; }
+  .detail-tag { font-size: 8pt !important; font-weight: 700 !important; opacity: 0.7 !important; }
+
+  /* Info fields */
+  .item-info-label {
+    font-size: 9pt !important;
+    color: #555 !important;
+    font-weight: 600 !important;
+  }
+  .item-info-input {
+    border: none !important;
+    border-bottom: 1px solid #999 !important;
+    background: transparent !important;
+    font-size: 10pt !important;
+    width: 100% !important;
+  }
+
+  /* Screenshot zones — show image full width when printed */
+  .ss-zone { background: #fff !important; border: 1px solid #ccc !important; margin-top: 4pt !important; }
+  .ss-empty { display: none !important; }
+  .ss-toolbar { background: #f0f0f0 !important; padding: 3pt 6pt !important; }
+  .ss-tab.active { background: #3d8b2f !important; color: #fff !important; font-size: 8pt !important; }
+  .ss-btn, .ss-tab:not(.active) { display: none !important; }
+  .ss-viewer {
+    height: auto !important;
+    min-height: 0 !important;
+    resize: none !important;
+    background: #fff !important;
+    max-height: 280pt !important;
+  }
+  .ss-viewer img { max-width: 100% !important; max-height: 280pt !important; object-fit: contain !important; }
+  .ss-resize-hint { display: none !important; }
+
+  /* Tables */
+  .tbl-wrap { overflow: visible !important; }
+  table { border-collapse: collapse !important; width: 100% !important; }
+  th {
+    background: #f0f4ee !important;
+    color: #333 !important;
+    font-size: 9pt !important;
+    font-weight: 700 !important;
+    padding: 4pt 8pt !important;
+    border: 1px solid #bbb !important;
+    text-align: left !important;
+  }
+  td {
+    padding: 4pt 8pt !important;
+    border: 1px solid #ddd !important;
+    color: #000 !important;
+    font-size: 10pt !important;
+  }
+  .tbl-input {
+    border: none !important;
+    border-bottom: 1px solid #aaa !important;
+    width: 100% !important;
+    font-size: 10pt !important;
+    background: transparent !important;
+  }
+
+  /* Tech notes */
+  .tn {
+    background: #fafafa !important;
+    border-top: 1px solid #ddd !important;
+    padding: 5pt 10pt !important;
+  }
+  .tn label { font-size: 8pt !important; color: #666 !important; font-weight: 600 !important; }
+  .tn textarea {
+    border: 1px solid #ccc !important;
+    background: #fff !important;
+    color: #000 !important;
+    font-size: 10pt !important;
+    min-height: 32pt !important;
+    width: 100% !important;
+  }
+
+  /* Sign-off */
+  .signoff {
+    border: 1px solid #ccc !important;
+    background: #fafafa !important;
+    padding: 8pt 14pt !important;
+    margin-top: 8pt !important;
+    page-break-inside: avoid;
+  }
+  .so-field label { font-size: 8pt !important; color: #666 !important; font-weight: 600 !important; }
+  .so-field input {
+    border: none !important;
+    border-bottom: 1.5px solid #555 !important;
+    font-size: 11pt !important;
+    background: transparent !important;
+    color: #000 !important;
+  }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo-wrap">🔧</div>
+  <div>
+    <div class="header-title">BAS PM Checklist Generator</div>
+    <div class="header-sub">Building Automation Systems · Preventative Maintenance</div>
+  </div>
+  <div class="header-badge"><div class="hbdot"></div>Runs Locally · No API Required</div>
+</header>
+
+<div class="container">
+
+  <!-- Upload -->
+  <div class="upload-section">
+    <div class="section-label">Upload Files</div>
+    <div class="upload-grid">
+
+      <div class="uzone" id="z-soo" onclick="document.getElementById('i-soo').click()">
+        <div class="uzone-accent" style="background:#3d8b2f"></div>
+        <div class="uzone-icon">📋</div>
+        <div class="uzone-label">Sequence of Operations</div>
+        <div class="uzone-sub" id="sb-soo">Drag & drop or click to upload</div>
+        <div class="uzone-pill" id="pl-soo">PDF</div>
+        <input type="file" id="i-soo" class="hidden" accept=".pdf">
+      </div>
+
+      <div class="uzone" id="z-inp" onclick="document.getElementById('i-inp').click()">
+        <div class="uzone-accent" style="background:#d4622a"></div>
+        <div class="uzone-icon">📥</div>
+        <div class="uzone-label">Input Points</div>
+        <div class="uzone-sub" id="sb-inp">Drag & drop or click to upload</div>
+        <div class="uzone-pill" id="pl-inp">CSV</div>
+        <input type="file" id="i-inp" class="hidden" accept=".csv">
+      </div>
+
+      <div class="uzone" id="z-out" onclick="document.getElementById('i-out').click()">
+        <div class="uzone-accent" style="background:#1a7db5"></div>
+        <div class="uzone-icon">📤</div>
+        <div class="uzone-label">Output Points</div>
+        <div class="uzone-sub" id="sb-out">Drag & drop or click to upload</div>
+        <div class="uzone-pill" id="pl-out">CSV</div>
+        <input type="file" id="i-out" class="hidden" accept=".csv">
+      </div>
+
+    </div>
+    <div class="upload-note">CSVs are optional — <strong>SoO PDF is required.</strong> Point names are extracted automatically from file paths.</div>
+  </div>
+
+  <!-- Info form -->
+  <div id="info-form">
+    <div class="section-label">Equipment Information</div>
+    <div class="form-grid">
+      <div class="field"><label>Building Number</label><input type="text" id="building" placeholder="e.g. 203"></div>
+      <div class="field"><label>Unit ID</label><input type="text" id="unit-id" placeholder="e.g. AHU-S4 &amp; S5"></div>
+      <div class="field"><label>Technician Name</label><input type="text" id="tech-name" placeholder="Full name"></div>
+    </div>
+    <div class="form-grid">
+      <div class="field">
+        <label>Document Layout</label>
+        <select id="doc-layout" style="width:100%;padding:10px 12px;border:1px solid var(--border-dark);border-radius:var(--radius-sm);background:var(--surface);font-family:inherit;font-size:12px;color:var(--text);">
+          <option value="auto" selected>Auto-detect (recommended)</option>
+          <option value="flow">Standard document (single column)</option>
+          <option value="column">Engineering drawing sheet (multi-column)</option>
+        </select>
+      </div>
+      <div class="field" style="grid-column:span 2;font-size:11px;color:var(--text-light);padding-top:24px;">
+        Leave on auto-detect for most SoOs. Force "Engineering drawing sheet" for AutoCAD-exported D-size or E-size sheets if the output still looks scrambled.
+      </div>
+    </div>
+    <button class="btn-gen" id="btn-gen" onclick="generate()">Generate PM Checklist from SoO →</button>
+  </div>
+
+  <div class="err-box" id="err"></div>
+
+  <!-- Progress -->
+  <div id="progress">
+    <div class="prog-title" id="prog-label">Parsing PDF...</div>
+    <div class="prog-track"><div class="prog-fill" id="prog-fill"></div></div>
+    <div class="prog-log" id="prog-log"></div>
+  </div>
+
+  <!-- Output -->
+  <div id="output"></div>
+
+</div>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// ══════════════════════════════════════════════════════════════════════════
+// NLP LAYER — compromise (structural) + Transformers.js MiniLM (semantic)
+// ══════════════════════════════════════════════════════════════════════════
+//
+// Two-stage pipeline that wraps the existing regex parser:
+//
+//   1. compromise extracts verb-object-modifier tuples from each line, so
+//      "verify damper position", "confirm damper opens", and "check damper
+//      operation" all normalize to the same (verify, damper) root. This
+//      kills the duplicate-check problem caused by repeated keywords.
+//
+//   2. MiniLM (all-MiniLM-L6-v2, ~25MB quantized) produces 384-dim
+//      sentence embeddings. Cosine similarity between an SoO sentence and
+//      a canonical check-type catalog picks up paraphrased requirements
+//      that regex misses, and collapses near-duplicate checks across
+//      different SoO sections.
+//
+// Everything runs locally. The model downloads once and is cached in
+// IndexedDB; from the second run onward the app is fully offline.
+// ══════════════════════════════════════════════════════════════════════════
+
+const NLP_CONFIG = {
+  // Cosine similarity thresholds — tuned for MiniLM on SoO-style text.
+  // DUP_THRESHOLD was 0.82 in v7, but HVAC section titles that differ only
+  // in sub-tokens (MA/OA vs MA/RA, RA Fan vs SA Fan, Cooling vs Heating
+  // Coil) can have MiniLM cosine similarity in the 0.85-0.92 range because
+  // the model compresses short acronym-heavy titles into similar embeddings.
+  // 0.93 keeps genuinely duplicate paraphrases merging while preserving
+  // legitimate MA/OA-vs-MA/RA and heating-vs-cooling distinctions.
+  DUP_THRESHOLD:       0.93,
+  CLASSIFY_THRESHOLD:  0.45,  // above this, a section matches a catalog category
+  ENABLE_EMBEDDINGS:   true,  // set false to skip the model entirely (falls back to regex-only)
+};
+
+// Canonical catalog — each entry is a PM category plus a handful of example
+// phrases. Embeddings of these examples form the "centroid" we compare
+// unknown section headers against when regex fails to classify them.
+const CATEGORY_CATALOG = [
+  { group: 'Safety and Smoke Purge Modes', examples: [
+      'fire mode shutdown', 'smoke purge operation', 'freeze protection',
+      'low temperature detection', 'water leak detection', 'emergency shutdown' ]},
+  { group: 'Normal Operating Modes', examples: [
+      'occupied mode operation', 'unoccupied setback', 'after-hours bypass',
+      'optimal start routine', 'space temperature control', 'run condition check' ]},
+  { group: 'Startup Sequence', examples: [
+      'system startup sequence', 'equipment start order', 'initial power-up',
+      'cold start routine' ]},
+  { group: 'Fans', examples: [
+      'supply fan operation', 'return fan tracking', 'exhaust fan control',
+      'fan VFD speed control', 'fan status proving' ]},
+  { group: 'Pumps', examples: [
+      'circulation pump operation', 'reheat pump control', 'hot water pump',
+      'boiler plant pump', 'radiant circuit pump' ]},
+  { group: 'Temperature and Coil Control', examples: [
+      'supply air temperature control', 'cooling coil valve modulation',
+      'heating coil control', 'preheat valve operation', 'economizer sequence',
+      'mixed air damper control', 'discharge air temperature reset' ]},
+  { group: 'Pressure and Flow Control', examples: [
+      'duct static pressure control', 'plenum static pressure',
+      'minimum outdoor air control', 'airflow tracking', 'building pressure control' ]},
+  { group: 'Dehumidification Control', examples: [
+      'dehumidification sequence', 'humidity setpoint reset', 'latent load control' ]},
+];
+
+// Embedding pipeline (lazy-loaded on first generate() call)
+let _embedder        = null;
+let _catalogEmb      = null;  // pre-computed category centroids
+let _embedderLoading = null;
+
+async function loadEmbedder(progressCb) {
+  if (_embedder) return _embedder;
+  if (_embedderLoading) return _embedderLoading;
+  if (!NLP_CONFIG.ENABLE_EMBEDDINGS) return null;
+  if (!window._transformers) {
+    console.warn('Transformers.js not loaded — skipping semantic layer');
+    return null;
+  }
+  _embedderLoading = (async () => {
+    progressCb?.('Loading semantic model (first run downloads ~25MB, cached for future runs)...');
+    const pipe = await window._transformers.pipeline(
+      'feature-extraction',
+      'Xenova/all-MiniLM-L6-v2',
+      { quantized: true }
+    );
+    _embedder = pipe;
+    // Pre-compute category centroid embeddings (one per category, averaged across examples)
+    progressCb?.('Indexing PM check categories...');
+    _catalogEmb = [];
+    for (const cat of CATEGORY_CATALOG) {
+      const vecs = await Promise.all(cat.examples.map(ex => embedText(ex)));
+      _catalogEmb.push({ group: cat.group, centroid: meanVector(vecs) });
+    }
+    return _embedder;
+  })();
+  return _embedderLoading;
+}
+
+async function embedText(text) {
+  if (!_embedder) return null;
+  const output = await _embedder(text, { pooling: 'mean', normalize: true });
+  return Array.from(output.data);
+}
+
+async function embedBatch(texts) {
+  // Sequential is fine here — MiniLM in WASM is ~50-100ms per sentence
+  const out = [];
+  for (const t of texts) out.push(await embedText(t));
+  return out;
+}
+
+function cosineSim(a, b) {
+  if (!a || !b) return 0;
+  let dot = 0;
+  for (let i = 0; i < a.length; i++) dot += a[i] * b[i];
+  return dot;  // vectors are already L2-normalized by the pipeline
+}
+
+function meanVector(vecs) {
+  const d = vecs[0].length;
+  const m = new Array(d).fill(0);
+  for (const v of vecs) for (let i = 0; i < d; i++) m[i] += v[i];
+  for (let i = 0; i < d; i++) m[i] /= vecs.length;
+  // Re-normalize so downstream cosine math stays clean
+  let n = 0;
+  for (let i = 0; i < d; i++) n += m[i] * m[i];
+  n = Math.sqrt(n) || 1;
+  for (let i = 0; i < d; i++) m[i] /= n;
+  return m;
+}
+
+// ── compromise: structural extraction ────────────────────────────────────
+// Given a line of SoO text, return a normalized signature like
+//   { action: 'verify', object: 'damper position', raw: '...' }
+// Used to deduplicate lines that describe the same check in different words.
+function extractStructure(line) {
+  if (typeof nlp === 'undefined') return { action: null, object: null, raw: line };
+  try {
+    const doc = nlp(line);
+    // Primary verb (infinitive/root form)
+    const verbs  = doc.verbs().toInfinitive().out('array');
+    const action = verbs[0]?.toLowerCase() || null;
+    // Primary noun phrase — prefer longer, more specific phrases
+    const nouns = doc.nouns().out('array');
+    const object = nouns
+      .map(n => n.toLowerCase().replace(/^(the|a|an)\s+/, '').trim())
+      .sort((a, b) => b.length - a.length)[0] || null;
+    return { action, object, raw: line };
+  } catch (e) {
+    return { action: null, object: null, raw: line };
+  }
+}
+
+// Signature used for exact structural dedup (cheap, runs before embeddings)
+function structureKey(s) {
+  if (!s.action && !s.object) return null;
+  return `${s.action || '*'}::${s.object || '*'}`;
+}
+
+// ── Semantic classification fallback ─────────────────────────────────────
+// Called when classifySection's regex returns '_misc'. If MiniLM finds a
+// category centroid with similarity above CLASSIFY_THRESHOLD, use that
+// instead of dumping the section into "Other Checks".
+async function classifySectionSemantic(headerText) {
+  if (!_embedder || !_catalogEmb) return null;
+  const vec = await embedText(headerText);
+  if (!vec) return null;
+  let best = { group: null, score: -1 };
+  for (const cat of _catalogEmb) {
+    const s = cosineSim(vec, cat.centroid);
+    if (s > best.score) best = { group: cat.group, score: s };
+  }
+  return best.score >= NLP_CONFIG.CLASSIFY_THRESHOLD ? best.group : null;
+}
+
+// ── Semantic dedup of generated checks ───────────────────────────────────
+// Takes the final list of check strings (grouped by section) and collapses
+// near-duplicates using cosine similarity. Preserves the longest variant
+// of each cluster since it usually carries the most detail.
+async function dedupeChecksSemantic(groupedChecks) {
+  if (!_embedder) return groupedChecks;
+  const out = {};
+  for (const [group, checks] of Object.entries(groupedChecks)) {
+    if (checks.length <= 1) { out[group] = checks; continue; }
+    // Embed the first line of each check (the "Verify X operates..." header)
+    // — that's where the semantic identity lives; body text is scaffolding.
+    const headers = checks.map(c => c.split('\n')[0]);
+    const vecs    = await embedBatch(headers);
+    const kept    = [];
+    const keptVecs = [];
+    for (let i = 0; i < checks.length; i++) {
+      let dup = false;
+      for (let j = 0; j < keptVecs.length; j++) {
+        if (cosineSim(vecs[i], keptVecs[j]) >= NLP_CONFIG.DUP_THRESHOLD) {
+          // Keep the longer of the two (more detail preserved)
+          if (checks[i].length > kept[j].length) {
+            kept[j]     = checks[i];
+            keptVecs[j] = vecs[i];
+          }
+          dup = true;
+          break;
+        }
+      }
+      if (!dup) { kept.push(checks[i]); keptVecs.push(vecs[i]); }
+    }
+    out[group] = kept;
+    if (kept.length < checks.length) {
+      console.log(`  [dedup] ${group}: ${checks.length} → ${kept.length} (removed ${checks.length - kept.length} paraphrased duplicate(s))`);
+    }
+  }
+  return out;
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+
+// ── File state ────────────────────────────────────────────────────────────
+const fdata = { soo: null, inp: null, out: null };
+
+function setupZone(zoneId, inputId, key) {
+  const zone = document.getElementById(zoneId);
+  const inp  = document.getElementById(inputId);
+  zone.addEventListener('dragover',  e => { e.preventDefault(); zone.classList.add('over'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('over'));
+  zone.addEventListener('drop', e => { e.preventDefault(); zone.classList.remove('over'); if (e.dataTransfer.files[0]) loadFile(e.dataTransfer.files[0], key); });
+  inp.addEventListener('change', e => { if (e.target.files[0]) loadFile(e.target.files[0], key); });
+}
+
+async function loadFile(file, key) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  const subId = key === 'soo' ? 'sb-soo' : key === 'inp' ? 'sb-inp' : 'sb-out';
+  const plId  = key === 'soo' ? 'pl-soo' : key === 'inp' ? 'pl-inp' : 'pl-out';
+  const zId   = key === 'soo' ? 'z-soo'  : key === 'inp' ? 'z-inp'  : 'z-out';
+
+  if (ext === 'pdf') {
+    fdata[key] = await file.arrayBuffer();
+  } else {
+    fdata[key] = await file.text();
+  }
+
+  document.getElementById(zId).classList.add('loaded');
+  document.getElementById(subId).textContent = '✓ ' + file.name;
+  document.getElementById(plId).textContent  = (file.size / 1024).toFixed(0) + ' KB';
+
+  if (key === 'soo') document.getElementById('info-form').style.display = 'block';
+}
+
+setupZone('z-soo', 'i-soo', 'soo');
+setupZone('z-inp', 'i-inp', 'inp');
+setupZone('z-out', 'i-out', 'out');
+
+// ── FIX 3: Extract point name from any path format ────────────────────────
+// e.g. /Drivers/BacnetNetwork/AHUS5/points/Inputs/SupplyAirStatic → SupplyAirStatic
+function extractPointName(raw) {
+  if (!raw) return '';
+  raw = raw.trim().replace(/^["']|["']$/g, '');
+  // If it contains a path separator, grab the last segment
+  if (raw.includes('/') || raw.includes('\\')) {
+    const parts = raw.split(/[/\\]/);
+    const last = parts.filter(Boolean).pop() || '';
+    return last;
+  }
+  return raw;
+}
+
+// ── CSV Parser — FIX 3 applied ────────────────────────────────────────────
+function parseCSV(text) {
+  const lines = text.trim().split(/\r?\n/).filter(l => l.trim());
+  if (!lines.length) return [];
+
+  // Detect header row
+  const first = lines[0].toLowerCase();
+  const startIdx = /name|point|tag|path|slot/i.test(first) ? 1 : 0;
+
+  return lines.slice(startIdx).map(line => {
+    const cols = line.split(',').map(c => c.replace(/^["']|["']$/g, '').trim());
+    // Try to find the most descriptive column — prefer one that looks like a point name
+    // Usually col 0 is the path/name, col 1 might be display name
+    for (const col of cols) {
+      if (col && col.length > 0) return extractPointName(col);
+    }
+    return '';
+  }).filter(Boolean);
+}
+
+// ── PDF Text Extraction ───────────────────────────────────────────────────
+//
+// Two extraction paths:
+//
+//   FLOW MODE (default) — rotation-aware Y-grouping across the whole page.
+//     Works for normal vertical-flowing documents: reports, specs, typical
+//     SoO PDFs written in Word/PDF format.
+//
+//   COLUMN MODE — a three-stage pipeline that handles AutoCAD-exported
+//     drawing sheets (D-size, E-size) with narrative text laid out in
+//     multiple columns beside a title block:
+//
+//       1. Apply viewport rotation to every text item so Y is visual
+//          vertical (critical — rotated drawing-sheet PDFs store text
+//          in a coordinate system where raw Y runs horizontally).
+//       2. Build "line fragments" — runs of items at the same visual Y
+//          separated by no X gap larger than 30pt. Items at the same Y
+//          in different visual columns become SEPARATE fragments.
+//       3. Cluster fragments into columns using 1D DBSCAN on left-edge X,
+//          filter to keep only narrative columns (drop title block,
+//          sheet border, and grid-reference markers).
+//
+// The mode is picked per-page by heuristics, or forced by the user via
+// the "Document Layout" dropdown. See rotateItemsToVisualCoords,
+// buildLineFragments, clusterFragmentsIntoColumns, isNarrativeColumn.
+//
+// Extraction mode selection. Driven by the dropdown in the UI.
+//   'auto'   — detect per page (default)
+//   'flow'   — force single-column (normal documents)
+//   'column' — force column-based (drawing sheets)
+const EXTRACTION_MODE_KEY = () => (document.getElementById('doc-layout')?.value || 'auto');
+
+// Heuristics for auto-detecting a drawing-sheet page.
+//   - Page is large (engineering sheet sizes are 22"x34" D, 34"x44" E)
+//   - OR the page is rotated 90°/270° (landscape drawing)
+//   - AND text items spread across more than one X-cluster
+// Letter/Legal/A4 pages almost never trigger this; ANSI D/E almost always do.
+function isDrawingSheetPage(page, items) {
+  const vp = page.getViewport({ scale: 1 });
+  const widthIn  = vp.width  / 72;
+  const heightIn = vp.height / 72;
+  const longSide = Math.max(widthIn, heightIn);
+  const rot = page.rotate || 0;
+  // Anything with a long side ≥ 20" is bigger than Letter/Legal/A4/Tabloid
+  const isLargeSheet = longSide >= 20;
+  // Rotated large pages are a strong signal (AutoCAD exports D-size rotated 270°)
+  const isRotatedLarge = isLargeSheet && (rot === 90 || rot === 270);
+  // Also check item X-spread — if items span a wide X range, columns are likely
+  if (!items.length) return false;
+  const xs = items.map(it => it.transform[4]);
+  const xMin = Math.min(...xs);
+  const xMax = Math.max(...xs);
+  const xSpread = xMax - xMin;
+  const wideSpread = xSpread > 900;  // ~12.5" — wider than any normal page text area
+  return isLargeSheet && (isRotatedLarge || wideSpread);
+}
+
+// ── Minimal DBSCAN implementation ─────────────────────────────────────────
+// Density-Based Spatial Clustering of Applications with Noise. Takes an
+// array of points, an eps distance, a minPts threshold, and a distance
+// function. Returns cluster labels (-2 for noise). Used below for both
+// paragraph clustering and column clustering.
+function dbscan(points, eps, minPts, distFn) {
+  const n = points.length;
+  const labels = new Array(n).fill(-1);
+  let clusterId = 0;
+  const neighborsOf = (i) => {
+    const out = [];
+    for (let j = 0; j < n; j++) {
+      if (j !== i && distFn(points[i], points[j]) <= eps) out.push(j);
+    }
+    return out;
+  };
+  for (let i = 0; i < n; i++) {
+    if (labels[i] !== -1) continue;
+    const neighbors = neighborsOf(i);
+    if (neighbors.length < minPts) { labels[i] = -2; continue; }
+    labels[i] = clusterId;
+    const queue = [...neighbors];
+    while (queue.length) {
+      const j = queue.shift();
+      if (labels[j] === -2) labels[j] = clusterId;
+      if (labels[j] !== -1) continue;
+      labels[j] = clusterId;
+      const nn = neighborsOf(j);
+      if (nn.length >= minPts) queue.push(...nn);
+    }
+    clusterId++;
+  }
+  return { labels, nClusters: clusterId };
+}
+
+// ── Rotation-aware item coordinates ───────────────────────────────────────
+// CRITICAL: engineering drawings exported from AutoCAD are stored in the
+// PDF with a page rotation of 270° (so the "width" dimension in the PDF
+// is actually the visual height). Items returned by pdf.js use raw PDF
+// coordinates, which means a rotated drawing's "Y axis" in the raw data
+// is actually the visual X axis. Without applying the rotation, Y-grouping
+// merges text from different visual vertical positions into one "line."
+// This function applies the viewport's rotation matrix and returns items
+// in visual coordinates: vx = visual horizontal, vy = visual vertical top.
+function rotateItemsToVisualCoords(items, viewport) {
+  const [a, b, c, d, e, f] = viewport.transform;
+  return items.map(it => {
+    const rx = it.transform[4], ry = it.transform[5];
+    const tx = a * rx + c * ry + e;
+    const ty = b * rx + d * ry + f;
+    // Rotations of 90° or 270° swap width and height; 0° and 180° don't
+    const rotSwapsAxes = Math.abs(a) < 0.01;
+    const w = rotSwapsAxes ? (it.height || 0) : (it.width || 0);
+    const h = rotSwapsAxes ? (it.width  || 0) : (it.height || 0);
+    return {
+      vx: tx,        // visual left edge
+      vy: ty - h,    // visual top edge (pdf baseline Y is at the bottom of the glyph)
+      vw: w,
+      vh: h,
+      str: it.str
+    };
+  });
+}
+
+// ── Stage 1: build line fragments from visual-coord items ─────────────────
+// A line fragment is a contiguous run of text items sharing the same Y
+// (within 3pt jitter) and separated by no X gap larger than 30pt. Items
+// at the same Y separated by a big X gap become SEPARATE fragments —
+// this is what prevents column-to-column bleed. Within-sentence spacing
+// is < 10pt, so 30pt is a safe cutoff.
+function buildLineFragments(vItems) {
+  const Y_TOL = 3;
+  const sorted = [...vItems].sort((a, b) => a.vy - b.vy);
+  const lines = [];
+  let current = [], currentY = null;
+  for (const it of sorted) {
+    if (currentY === null || Math.abs(it.vy - currentY) > Y_TOL) {
+      if (current.length) lines.push(current);
+      current = [it];
+      currentY = it.vy;
+    } else {
+      current.push(it);
+    }
+  }
+  if (current.length) lines.push(current);
+
+  const fragments = [];
+  for (const line of lines) {
+    line.sort((a, b) => a.vx - b.vx);
+    let frag = [line[0]];
+    for (let i = 1; i < line.length; i++) {
+      const prev = frag[frag.length - 1];
+      const gap = line[i].vx - (prev.vx + (prev.vw || 0));
+      if (gap > 30) { fragments.push(frag); frag = [line[i]]; }
+      else frag.push(line[i]);
+    }
+    if (frag.length) fragments.push(frag);
+  }
+  return fragments.map(items => {
+    const xs     = items.map(it => it.vx);
+    const xEnds  = items.map(it => it.vx + (it.vw || 0));
+    const ys     = items.map(it => it.vy);
+    const heights = items.map(it => it.vh || 10);
+    return {
+      xMin: Math.min(...xs),
+      xMax: Math.max(...xEnds),
+      y:    ys.reduce((a,b)=>a+b,0) / ys.length,
+      text: items.map(it => it.str).join(' ').trim(),
+      height: Math.max(...heights)
+    };
+  }).filter(f => f.text);
+}
+
+// Serialize a sorted list of fragments to text, preserving indent as leading
+// spaces so the parser can distinguish flush-left section headers from
+// indented subheaders and bulleted items. Indent level is measured relative
+// to the leftmost fragment in the column — every 8pt of offset becomes one
+// space. A fragment at the column's left margin gets no prefix; one at
+// xMin = colLeft + 24pt (typical subheader/bullet indent) gets 3 spaces.
+function serializeColumn(frags) {
+  if (!frags.length) return '';
+  const sorted = [...frags].sort((a, b) => a.y - b.y);
+  const colLeft = Math.min(...sorted.map(f => f.xMin));
+  return sorted.map(f => {
+    const indent = Math.max(0, Math.round((f.xMin - colLeft) / 8));
+    return ' '.repeat(indent) + f.text;
+  }).join('\n');
+}
+
+// ── Stage 2: cluster line fragments into columns ──────────────────────────
+// 1D DBSCAN on each fragment's left edge (xMin). Fragments whose left
+// edges are within 60pt are in the same column. Noise points (isolated
+// fragments that aren't close enough to any cluster) get absorbed into
+// whichever column center is closest, within 150pt. Columns are returned
+// sorted left-to-right.
+function clusterFragmentsIntoColumns(fragments) {
+  if (fragments.length < 2) return [fragments];
+  const pts = fragments.map(f => ({ x: f.xMin }));
+  const { labels } = dbscan(pts, 60, 2, (a, b) => Math.abs(a.x - b.x));
+  const cols = new Map();
+  for (let i = 0; i < labels.length; i++) {
+    if (labels[i] >= 0) {
+      if (!cols.has(labels[i])) cols.set(labels[i], []);
+      cols.get(labels[i]).push(fragments[i]);
+    }
+  }
+  const centers = new Map();
+  for (const [id, frags] of cols) {
+    centers.set(id, frags.reduce((s, f) => s + f.xMin, 0) / frags.length);
+  }
+  // Absorb noise points into nearest column within 150pt
+  for (let i = 0; i < labels.length; i++) {
+    if (labels[i] < 0) {
+      let best = -1, bestDist = Infinity;
+      for (const [id, center] of centers) {
+        const d = Math.abs(fragments[i].xMin - center);
+        if (d < bestDist) { bestDist = d; best = id; }
+      }
+      if (best >= 0 && bestDist < 150) cols.get(best).push(fragments[i]);
+    }
+  }
+  const colList = [...cols.values()]
+    .map(frags => ({ frags, xMin: Math.min(...frags.map(f => f.xMin)) }))
+    .sort((a, b) => a.xMin - b.xMin);
+  return colList.map(c => c.frags);
+}
+
+// ── Stage 3: filter to narrative columns only ─────────────────────────────
+// Drop columns that are (a) in the rightmost 15% of the page — these are
+// the title block, or (b) contain fewer than 3 fragments or < 2 fragments
+// longer than 40 chars — these are border markers, single labels, etc.
+function isNarrativeColumn(frags, pageWidth) {
+  if (frags.length < 3) return false;
+  const meanX = frags.reduce((s, f) => s + f.xMin, 0) / frags.length;
+  if (meanX > pageWidth * 0.85) return false;
+  const longFrags = frags.filter(f => f.text.length > 40).length;
+  return longFrags >= 2;
+}
+
+// Common AutoCAD / AEC title-block labels. Any line exactly matching one
+// of these (case-insensitive, with or without trailing colon) is dropped
+// before it reaches the parser, so it can't get mistaken for a section
+// header. Also catches other drafting metadata that shows up as short
+// isolated lines in drawing sheets.
+const TITLE_BLOCK_LABELS_RX = [
+  /^(solicitation|contract|file|sheet|project|job|drawing|contract)\s*(no|number|name)?\.?\s*:?$/i,
+  /^(dwn|ckd|chkd|designed|submitted|approved|drawn|checked|reviewed)\s*by\s*:?$/i,
+  /^(plot\s*scale|issue\s*date|scale|date|rev|revision|size|sheet)\s*:?$/i,
+  /^(appr\.?|mark|description|author|of)\s*:?$/i,
+  /^(sheet\s*identification|sheet\s*of|sheet\s*\d+\s*of\s*\d+)$/i,
+  /^(us\s*army\s*corps|of\s*engineers|ansi\s*[a-e]|[a-e]\s*size)$/i,
+  /^w\d{3,}[-\w]*$/i,                 // contract numbers like W912DY-15-D-0009
+  /^i-\d+(\.\d+)*$/i,                 // sheet identification codes like I-106.11
+  /^[a-z]\s*$/i,                       // stray single letters ("A", "B", "C", "D" column markers)
+  /^\d{1,2}\/\d{1,2}\/\d{2,4}$/,      // dates alone on a line
+  /^tdp-\d/i,                          // TDP revision stamps
+  /^\d+\s*(of|\/)\s*\d+$/i,           // "11 of 44" sheet numbers
+];
+
+function isTitleBlockLine(line) {
+  const t = line.trim();
+  if (!t || t.length > 80) return false;
+  return TITLE_BLOCK_LABELS_RX.some(rx => rx.test(t));
+}
+
+function stripTitleBlockLines(lines) {
+  return lines.filter(l => !isTitleBlockLine(l));
+}
+
+async function extractPdfText(arrayBuffer) {
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const mode = EXTRACTION_MODE_KEY();
+  const pages = [];
+  let pagesUsedColumnMode = 0;
+
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page    = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    const items   = content.items;
+    const vp      = page.getViewport({ scale: 1 });
+
+    let useColumnMode;
+    if (mode === 'flow')        useColumnMode = false;
+    else if (mode === 'column') useColumnMode = true;
+    else                        useColumnMode = isDrawingSheetPage(page, items);
+
+    let pageText;
+
+    if (useColumnMode) {
+      // 1. Apply viewport rotation so Y is visual vertical (fixes the root
+      //    cause of the "same-Y-different-columns" problem in rotated sheets)
+      const vItems = rotateItemsToVisualCoords(items, vp);
+      // 2. Break items into line fragments (same visual Y, no big X gap)
+      const fragments = buildLineFragments(vItems);
+      // 3. Cluster fragments into columns by left-edge X
+      const columns = clusterFragmentsIntoColumns(fragments);
+      // 4. Keep only narrative columns (drop title block and border markers)
+      const narrative = columns.filter(c => isNarrativeColumn(c, vp.width));
+
+      if (narrative.length >= 1) {
+        pagesUsedColumnMode++;
+        console.log(`[extract] Page ${p}: COLUMN MODE — ${narrative.length} narrative column(s) from ${columns.length} total clusters`);
+        narrative.forEach((col, i) => {
+          const xMin = Math.min(...col.map(f => f.xMin));
+          const xMax = Math.max(...col.map(f => f.xMax));
+          console.log(`  Col ${i+1}: ${col.length} fragments, x=[${Math.round(xMin)}, ${Math.round(xMax)}]`);
+        });
+        // Render each column top-to-bottom using serializeColumn, which
+        // preserves indent information as leading spaces — important for
+        // distinguishing flush-left section headers from indented subheaders.
+        const columnTexts = narrative.map(col => {
+          const serialized = serializeColumn(col);
+          const lines = serialized.split('\n');
+          return stripTitleBlockLines(lines).join('\n');
+        });
+        pageText = columnTexts.join('\n\n');
+      } else {
+        // No clean narrative columns — fall back to flow mode on this page
+        console.log(`[extract] Page ${p}: column mode found no narrative columns, using flow fallback`);
+        const vItems2 = rotateItemsToVisualCoords(items, vp);
+        const frags = buildLineFragments(vItems2);
+        const serialized = serializeColumn(frags);
+        pageText = stripTitleBlockLines(serialized.split('\n')).join('\n');
+      }
+    } else {
+      console.log(`[extract] Page ${p}: FLOW MODE`);
+      // Standard path: rotate-aware extraction also helps here in case of
+      // unrotated pages where the transform is identity — it's a no-op.
+      const vItems = rotateItemsToVisualCoords(items, vp);
+      const frags = buildLineFragments(vItems);
+      const serialized = serializeColumn(frags);
+      pageText = stripTitleBlockLines(serialized.split('\n')).join('\n');
+    }
+
+    pages.push(pageText);
+  }
+
+  if (pagesUsedColumnMode > 0) {
+    console.log(`[extract] Used column mode on ${pagesUsedColumnMode} of ${pdf.numPages} page(s)`);
+  }
+
+  // Post-processing: remove repeating page headers/footers. The signal for
+  // a running-head line is that it appears on MOST PAGES of the document,
+  // not that it appears many times overall. Counting total occurrences
+  // (v9 approach) produces false positives — a phrase that appears in 2
+  // different sections of a 2-page document is not a page header.
+  //
+  // v10: Even lines that appear on many pages can be legitimate content
+  // rather than page headers — specifically, structural markers like
+  // "Alarms shall be provided as follows:" that recur because the SoO has
+  // multiple sections each with their own alarm list. Never drop these
+  // even if they meet the page-count threshold.
+  const PROTECTED_RECURRING_RX = [
+    /^alarms?\s*shall\s*be\s*provided/i,
+    /^alarms?\s*:?\s*$/i,
+    /^if\s*:?\s*$/i,
+    /^or\s+if\s*:?\s*$/i,
+    /^and\s+if\s*:?\s*$/i,
+    /^the\s+.{0,40}\s+shall\s+be\s+enabled\s+whenever/i,
+    /^end\s+of\s+sequence\s*$/i,
+  ];
+  const isProtected = (line) => PROTECTED_RECURRING_RX.some(rx => rx.test(line));
+
+  const pagesPerLine = new Map();  // trimmed line text → Set of page indices
+  for (let pi = 0; pi < pages.length; pi++) {
+    const uniqueOnPage = new Set();
+    for (const raw of pages[pi].split('\n')) {
+      const t = raw.trim();
+      if (!t || t.length >= 80) continue;
+      uniqueOnPage.add(t);
+    }
+    for (const t of uniqueOnPage) {
+      if (!pagesPerLine.has(t)) pagesPerLine.set(t, new Set());
+      pagesPerLine.get(t).add(pi);
+    }
+  }
+  const numPages = pdf.numPages;
+  const minPages = Math.max(2, Math.ceil(numPages * 0.5));
+  const repeats = new Set();
+  for (const [t, pageSet] of pagesPerLine) {
+    if (pageSet.size >= minPages && !isProtected(t)) repeats.add(t);
+  }
+  if (repeats.size > 0) {
+    console.log(`[extract] Removing ${repeats.size} page header/footer line(s) (appearing on ≥${minPages} of ${numPages} pages):`,
+      [...repeats].slice(0, 5).map(s => `"${s.slice(0, 50)}"`).join(', '));
+  }
+  const combined = pages.join('\n');
+  const filtered = combined.split('\n').filter(l => !repeats.has(l.trim())).join('\n');
+  return filtered;
+}
+
+// ── Universal SoO Parser ──────────────────────────────────────────────────
+//
+// Strategy: dynamically detect ANY "Section Title:" header, collect the
+// body under it, then bucket each section into one of 9 PM groups using
+// keyword matching. Works for mode-based (B203), run-condition based (B207),
+// simple (B101), plant/boiler (B500 Boilers), RTU, etc.
+//
+
+// ── Group mapping — buckets each detected section into a PM category ─────
+// Order matters: first match wins. Each entry:
+//   group:    PM checklist section name
+//   patterns: regexes tested against the section header text
+const GROUP_MAP = [
+  {
+    group: 'Safety and Smoke Purge Modes',
+    patterns: [
+      /fire\s*mode/i, /freeze\s*(mode|protect)/i,
+      /smoke\s*(control|purge|detect|mode)/i,
+      /low\s*temp(erature)?\s*(detect|protect)/i,
+      /water\s*leak/i,
+    ]
+  },
+  {
+    group: 'Normal Operating Modes',
+    patterns: [
+      /occupied\s*mode/i, /unoccupied\s*mode/i, /bypass\s*mode/i,
+      /optimal\s*start/i, /run\s*condition/i, /space\s*temp/i,
+      /space\s*humid/i,
+    ]
+  },
+  {
+    group: 'Startup Sequence',
+    patterns: [/startup/i, /start[\s-]*up/i]
+  },
+  {
+    group: 'Fans',
+    patterns: [
+      /\bsa\s*(and\s*ra\s*)?fan\b/i, /\bra\s*fan\b/i, /\bea\s*fan\b/i,
+      /\bma\s*stir\s*fan\b/i, /\bfan\s*track/i,
+    ]
+  },
+  {
+    group: 'Pumps',
+    patterns: [
+      /circ(ulation)?\s*pump/i, /reheat\s*pump/i, /re[\s-]*heat\s*(heating\s*)?pump/i,
+      /radiant\s*(circuit\s*)?pump/i, /boiler/i, /heating\s*plant/i,
+      /re[\s-]*heat\s*(heating\s*)?water/i,
+    ]
+  },
+  {
+    group: 'Temperature and Coil Control',
+    patterns: [
+      /sa\s*temp(erature)?\s*control/i, /sa\s*temp(erature)?\s*setpoint/i,
+      /cool(ing)?\s*coil/i, /heat(ing)?\s*coil/i, /preheat\s*control/i,
+      /economizer/i, /humidif/i, /dehumidif/i,
+      /cold\s*deck/i, /hot\s*deck/i,
+      /ma\/oa\s*(heating|cooling)/i, /ma\/ra\s*(heating|cooling)/i,
+      /damper\s*operat/i, /building\s*hot\s*water/i,
+    ]
+  },
+  {
+    group: 'Pressure and Flow Control',
+    patterns: [
+      /duct\s*static/i, /static\s*pressure/i, /plenum\s*static/i,
+      /minimum\s*oa/i, /min(imum)?\s*oa\s*control/i, /ra\s*fan\s*track/i,
+      /smoke\s*purge/i, /unoccupied\s*(build|protect)/i,
+    ]
+  },
+  {
+    group: 'Dehumidification Control',
+    patterns: [/dehumidif/i]
+  },
+];
+
+// Sections that only produce alarms — skip as functional checks. We keep
+// this list intentionally narrow. Many "X Temperature:" / "X Humidity:"
+// sections in real SoOs contain both functional content AND alarm thresholds;
+// the decision to treat a section as alarms-only now happens in the parser
+// after looking at the body content (see parseSoO's "alarm-only by content"
+// check). These header-based matchers only catch headers whose NAME itself
+// declares the section is alarms ("Alarms:", "Alarms shall be...").
+const ALARM_ONLY_RX = [
+  /^monitoring/i,
+  /^boiler\s*alarm/i,
+  /^alarms?\s*shall/i,           // "Alarms shall be provided as follows:"
+  /^alarms?\s*:?\s*$/i,          // bare "Alarms:"
+];
+
+// Skip these entirely — not useful as checklist items
+const SKIP_SECTION_RX = [
+  /^run\s*condition.*requested/i,
+  /^end\s*of\s*sequence/i,
+  /^page\s*\d/i,
+  /^see\s*(below|above|table)/i,
+  /^note\s*:/i,
+  // v9: "Modes: (highest priority to lowest)" — an outline header listing
+  // the modes that follow as their own real sections. Has no standalone
+  // content of its own.
+  /^modes\s*:/i,
+];
+
+function classifySection(headerText) {
+  const h = headerText.trim();
+  if (SKIP_SECTION_RX.some(rx => rx.test(h))) return null;
+  if (ALARM_ONLY_RX.some(rx => rx.test(h))) return '_alarms';
+  for (const entry of GROUP_MAP) {
+    if (entry.patterns.some(rx => rx.test(h))) return entry.group;
+  }
+  // If it has real content it may still be useful — put in a catch-all
+  return '_misc';
+}
+
+// ── Header detection ──────────────────────────────────────────────────────
+// A line is a section header if:
+//   1. It is flush-left (not indented beyond a small tolerance), AND
+//   2. It ends with ":" OR looks like a short title, AND
+//   3. It isn't prose, a bullet, a page footer, a title-block label,
+//      a mid-paragraph subheader, or a repeating document header
+function isHeaderLine(line) {
+  const originalIndent = line.length - line.trimStart().length;
+  const t = line.trim();
+  if (!t || t.length < 3 || t.length > 100) return false;
+
+  // Reject indented lines — real section headers are flush-left in both
+  // flowing documents and drawing sheets. Mid-paragraph subheaders like
+  // "whenever:" or "Alarms shall be provided as follows:" are indented
+  // because they're inside a paragraph block. 3 spaces of tolerance allows
+  // for slight extraction jitter.
+  if (originalIndent > 3) return false;
+
+  if (/^[•\-–—*·●∙▪\uf0b7\uf0a7]/.test(t)) return false;                          // bullet
+  if (/^(if:|or if:|and |not in |the |to |when |once |as |for |in |on |at )/i.test(t)) return false; // prose
+  if (/^\d+$/.test(t)) return false;                               // page number
+  if (/^(arl|alc|primary integration|sequence of operation|page \d|b\d{3})/i.test(t)) return false; // doc header/footer
+
+  // Explicitly reject lines that are alarm/note sub-headers inside body text
+  if (/^alarms?\s*shall\s*be\s*provided/i.test(t)) return false;
+  if (/^note:/i.test(t)) return false;
+  if (/^(see\s*(below|above)|end\s*of\s*sequence)/i.test(t)) return false;
+
+  // Reject "whenever:" and bare trailing-keyword-only lines — these are
+  // the tails of "The X shall be enabled whenever:" that got split onto
+  // their own line by extraction. Also reject FULL sentences ending in
+  // "whenever:" because those are mid-paragraph prose, not section titles:
+  //   "Humidification shall be enabled whenever:"
+  //   "The MA/OA heating valve shall be enabled whenever:"
+  if (/^(whenever|however|unless|except|provided that|subject to)\s*:?\s*$/i.test(t)) return false;
+  if (/\b(shall|will|may|must|should)\s+be\s+(enabled|disabled|activated|deactivated|controlled|permitted|allowed|started|stopped|set)\s+whenever\s*:?\s*$/i.test(t)) return false;
+  // Broader catch: any sentence ending in "...whenever:" is prose, not a header
+  if (/\bwhenever\s*:\s*$/i.test(t) && t.split(/\s+/).length > 2) return false;
+
+  // Reject prose-ending-in-colon that isn't actually a header. Real headers
+  // are titles ("Heating Coil Valve in the MA/OA Duct:"), not sentences.
+  // Sentences typically contain specific prose markers: "see below," "as follows,"
+  // "per the," "is/are/was/shall be ... ing". If any of these appear, this is
+  // prose that happens to end with a colon.
+  if (t.endsWith(':')) {
+    const inner = t.slice(0, -1);
+    if (/\b(see\s+(below|above|table|figure)|as\s+follows|per\s+the|following\s+(conditions|requirements|alarms|items))\b/i.test(inner)) return false;
+    // Mid-sentence prose: ends in colon but contains a predicate verb
+    if (/\b(shall\s+be|will\s+be|is\s+to|are\s+to|should\s+be|must\s+be)\b.*\b(when|unless|if)\b/i.test(inner)) return false;
+    // Has more than 12 words → likely a sentence, not a title
+    if (inner.split(/\s+/).length > 12) return false;
+  }
+
+  // Reject AutoCAD / engineering title-block labels (defense in depth —
+  // the extraction layer already strips these, but in case one survives
+  // because the user forced flow mode on a drawing sheet, catch it here)
+  if (isTitleBlockLine(t)) return false;
+
+  // Reject lines that are clearly list items even without a bullet marker,
+  // e.g. "P1, P2, P3" — pump rotation schedules. A line made almost entirely
+  // of short comma-separated tokens is a list, not a section header.
+  const tokens = t.split(/\s+/);
+  const isShortTokenList = tokens.length >= 2
+    && tokens.length <= 8
+    && tokens.every(tok => tok.length <= 6 && /^[,a-z0-9#.-]+$/i.test(tok));
+  if (isShortTokenList) return false;
+
+  // ── v9: Reject prose-continuation fragments ──────────────────────────
+  // Lines like "be raised when:" or "shall be provided as follows:" that
+  // got line-wrapped from a longer sentence. Real section headers start
+  // with a capital letter and a meaningful noun — not a verb form like
+  // "be", "is", "shall", "will", "have", "has".
+  if (/^(be|is|are|was|were|has|have|had|shall|will|may|must|should|can|could|would|do|does|did|not|to)\b/i.test(t)) return false;
+
+  // Also catches continuation fragments ending in common conjunction-colons
+  // like "...shall be provided as follows:", "...operates in such a manner that:"
+  if (t.endsWith(':') && /\b(as\s+follows|as\s+described|as\s+noted|as\s+required|so\s+that|such\s+that|in\s+order\s+to)\s*:?\s*$/i.test(t)) return false;
+  // Many SoOs (B205, Primary Integration style) use this pattern:
+  //   Fire Mode:
+  //   IF:
+  //   • condition A
+  //   • condition B
+  //   … the controller shall index the unit to "Fire Mode":
+  //   The SA Fan and RA Fan will stop
+  //   ...
+  // The "… the controller shall..." line is NOT a new section — it's the
+  // THEN-clause of the IF block that belongs to the preceding real header.
+  // Reject any line that starts with an ellipsis, or is a "... the X shall
+  // index/command/set ..." phrase describing what happens when conditions
+  // are met.
+  if (/^\s*(…|\.{3,})/.test(t)) return false;
+  if (/^(…|\.{3,})?\s*the\s+(controller|unit|system|fan|pump|damper|valve|plant)\s+(shall|will|may|must|should)\s+(index|command|set|enable|disable|start|stop|energize|de-?energize|run|close|open|operate|modulate|ramp)/i.test(t)) return false;
+
+  // ── v9: Reject mode-name enumeration entries ─────────────────────────
+  // Pattern: "Modes:" header followed by a bare list of mode names:
+  //   Modes: (highest priority to lowest)
+  //   The unit shall index to one of six modes:
+  //   Fire Mode
+  //   Freeze Mode
+  //   Smoke Control Mode     ← these are enumeration items, not headers
+  //   Occupied Mode
+  //   Bypass Mode
+  //   Unoccupied Mode
+  // Signature: a 2-3 word line that matches "<Word> Mode" / "<Word> <Word>
+  // Mode" with no trailing colon. The real headers for these modes appear
+  // later with trailing colons.
+  if (/^[A-Z][a-zA-Z]+(\s+[A-Z][a-zA-Z]+){0,2}\s+Mode\s*$/.test(t)) return false;
+
+  // ── v9: Reject predicate-sentence lines that look title-ish ──────────
+  // Lines like "All Circulation Pumps shall de-energize (if present...)"
+  // or "Minimum OA Control is NOT allowed" are prose, not titles, even
+  // though they're capitalized and have no terminal period. Real section
+  // titles are nominal phrases ("SA Duct Static Pressure Control"), not
+  // sentences with predicates.
+  // v9: "Title: (parenthetical annotation)" pattern — check this FIRST
+  // before the predicate-sentence rejection. Many SoOs annotate headers
+  // with optional-equipment notes like:
+  //   "Fire Mode: (if smoke detectors are present and monitored by the controller)"
+  //   "MA Stir Fan: (if present and controllable)"
+  //   "Pre-Heat Circulation Pump: (if present and controllable)"
+  // The parenthetical commonly contains predicate verbs ("are present",
+  // "is on", etc.) which would fool the predicate-sentence rejection
+  // below if we checked that first. So accept these as headers immediately
+  // when the before-colon portion is a short title-cased phrase and the
+  // rest is a single parenthetical annotation.
+  const titleWithParenMatch = t.match(/^([A-Z][a-zA-Z0-9\-\/ ]{2,40}):\s*\(.+\)\s*$/);
+  if (titleWithParenMatch && titleWithParenMatch[1].split(/\s+/).length <= 10) {
+    return true;
+  }
+
+  // Reject predicate-sentence lines that look title-ish. Lines like
+  // "All Circulation Pumps shall de-energize (if present and controllable)"
+  // or "Minimum OA Control is NOT allowed" are prose, not titles, even
+  // though they're capitalized and have no terminal period. This check
+  // runs AFTER the parenthetical-title acceptance above so we don't
+  // accidentally reject "Fire Mode: (if ... are present ...)".
+  const hasPredicate =
+    /\b(shall|will|may|must|should)\s+(be\s+)?[a-z]/.test(t) ||
+    /\b(is|are|was|were|has|have|does|do)\s+(not\s+)?[a-z]/.test(t) ||
+    /\bNOT\s+(allowed|permitted|enabled|active|required|applicable)/i.test(t);
+  if (hasPredicate && !t.endsWith(':')) return false;
+
+  // Must end with ":" OR look like a title (starts with capital, mostly words, no full sentence)
+  const endsWithColon = t.endsWith(':');
+  const looksLikeTitle = /^[A-Z]/.test(t) && t.split(/\s+/).length <= 10 && !/[.?!]$/.test(t);
+  return endsWithColon || looksLikeTitle;
+}
+
+// ── Build check text from a section's body lines ──────────────────────────
+//
+// Returns an object:
+//   checkText:      the rendered "Verify X operates correctly per SoO…" text
+//   alarmLines:     extracted alarm thresholds for the "Trending and Alarms" section
+//   tableLines:     extracted table rows (key-value pairs) for later rendering
+//   isAlarmsOnly:   true if the section body consists entirely of alarm items,
+//                   meaning this section should NOT generate a functional check
+//                   (only contribute to the alarms list). Replaces the old
+//                   ALARM_ONLY_RX header-based guess with content-based logic.
+//
+// Alarm extraction model:
+//   A body line is an alarm if (a) it's a bullet or indented line following
+//   "Alarms shall be provided as follows:", or (b) it matches the pattern
+//   "<High|Low> <Something>: <condition>" / "<X> Fan Failure: <condition>".
+//   Once we see "Alarms shall be provided as follows:" we enter ALARM MODE
+//   and route every subsequent bulleted/indented line into alarmLines until
+//   we see a fresh paragraph-starting sentence (indent=0, capitalized, not
+//   alarm-pattern) that signals the alarm block has ended.
+function buildCheckText(headerText, bodyLines) {
+  const name = headerText.replace(/:$/, '').trim();
+
+  const conditions = [];
+  const outcomes   = [];
+  const alarmLines = [];
+  const tableLines = [];
+  let inAlarmBlock = false;
+  // v9: IF/THEN block state. States:
+  //   'none'        — no IF block seen yet, normal prose parsing
+  //   'in_if'       — inside an IF:/OR IF: block, bullets = conditions
+  //   'post_then'   — past the "… the controller shall..." line, bullets = outcomes
+  let ifState = 'none';
+
+  // Pattern matchers
+  const ALARM_LINE_RX = /^(high|low|fan|pump|boiler|radiant|re-?heat|prht|ma |ra |sa |ea |oa |chw|hw|water\s*leak|smoke|filter|freeze|static)[^.]*?:.*$/i;
+  const ALARM_BLOCK_START_RX = /^\s*alarms?\s*shall\s*be\s*provided\b/i;
+  // IF-block boundary markers
+  const IF_START_RX    = /^\s*(if|or\s+if|and\s+if)\s*:\s*$/i;
+  const IF_THEN_RX     = /^\s*(…|\.{3,}).*\bshall\s+(index|command|set|run|stop|operate|close|open|enable|disable|energize|de-?energize|ramp|start)/i;
+  // Table row detection runs in two modes:
+  //   (a) Single-line: label and value on one line, separated by whitespace.
+  //       Example: "AHU-3  500", "1-2 7629"
+  //   (b) Adjacent-line: label on its own line immediately followed by a
+  //       value-only line. Common in PDF tables exported from Word where
+  //       each cell becomes its own text item on its own Y coordinate.
+  //       Example: line "1-2" followed by line "7629"
+  const TABLE_ROW_RX       = /^([A-Z0-9]+(?:[-\/][A-Z0-9]+){1,2})\s+(\d{2,6})\s*$/i;
+  const TABLE_LABEL_ONLY_RX = /^([A-Z0-9]+(?:[-\/][A-Z0-9]+){1,2})\s*$/i;
+  const TABLE_VALUE_ONLY_RX = /^(\d{2,6}(?:\.\d+)?)\s*$/;
+
+  // Pre-scan: pair adjacent label+value lines into synthetic single-line
+  // table rows so the main loop sees them as atomic "1-2 7629" entries.
+  // We scan the bodyLines once, looking for a label-only line whose next
+  // non-blank line is a value-only line, and rewrite both into a combined
+  // string (the second is cleared so it's ignored downstream).
+  const processedBody = [...bodyLines];
+  for (let i = 0; i < processedBody.length - 1; i++) {
+    const a = processedBody[i].trim();
+    if (!TABLE_LABEL_ONLY_RX.test(a)) continue;
+    // Find next non-blank line
+    let j = i + 1;
+    while (j < processedBody.length && !processedBody[j].trim()) j++;
+    if (j >= processedBody.length) continue;
+    const b = processedBody[j].trim();
+    if (!TABLE_VALUE_ONLY_RX.test(b)) continue;
+    // Require the label to look table-like (contains a separator, or is short)
+    if (!/[-\/]/.test(a) && a.length > 5) continue;
+    // Merge and null out the value line
+    processedBody[i] = `${a} ${b}`;
+    processedBody[j] = '';
+  }
+
+  for (const raw of processedBody) {
+    const originalIndent = raw.length - raw.trimStart().length;
+    const line  = raw.trim();
+    const clean = line.replace(/^[•\-–—*·●∙▪\uf0b7\uf0a7]\s*/, '').trim();
+    if (!clean || clean.length < 4) continue;
+
+    // Skip page artifacts
+    if (/^(arl|alc|primary integration|sequence of operation|page \d|b\d{3})/i.test(clean)) continue;
+    // Skip orphan fragments that are just numbers or unit symbols (table
+    // fragments or subscripts that got split onto their own line)
+    if (/^[\d.,\s()°F%]+$/.test(clean) && clean.length < 10) continue;
+
+    // v9: IF/THEN block state transitions. These lines don't emit text —
+    // they just flip the routing mode for subsequent lines.
+    if (IF_START_RX.test(line)) {
+      // "IF:" or "OR IF:" — everything until "…" is a condition
+      ifState = 'in_if';
+      continue;
+    }
+    if (IF_THEN_RX.test(line)) {
+      // "… the controller shall index the unit to X" — transitions to outcomes
+      ifState = 'post_then';
+      continue;
+    }
+    // Skip stand-alone ellipsis lines that aren't THEN clauses
+    if (/^(…|\.{3,})\s*$/.test(clean)) continue;
+
+    // Table row — capture for later
+    const tableMatch = clean.match(TABLE_ROW_RX);
+    if (tableMatch) {
+      tableLines.push({ label: tableMatch[1], value: tableMatch[2] });
+      continue;
+    }
+
+    // Detect start of an alarm block
+    if (ALARM_BLOCK_START_RX.test(raw)) {
+      inAlarmBlock = true;
+      continue;   // don't emit the "Alarms shall be..." line itself
+    }
+
+    // While in an alarm block: accept ONLY bulleted lines or lines that
+    // unambiguously match an alarm-threshold pattern.
+    //
+    // v10 fix: v9 used `isBullet || isIndented || looksLikeAlarmPattern`
+    // here, but in documents where the ENTIRE section body is indented
+    // (e.g. B202-204 Reheat), the `isIndented` condition matched every
+    // subsequent prose line, so paragraph text that happened to follow an
+    // "Alarms shall be provided as follows:" block got swept into
+    // alarmLines. Dropping the `isIndented` check makes alarm capture
+    // rely on the two reliable signals: bullet markers, and the specific
+    // phrase patterns that alarm thresholds take (High/Low X, Fan Failure,
+    // etc. already matched by ALARM_LINE_RX).
+    //
+    // Exit alarm mode on any non-bullet, non-alarm-pattern line, OR on
+    // the first line that starts with a typical sentence/paragraph
+    // opener regardless of indent. This handles sections where body
+    // continues with more prose after the alarm block.
+    // v10 fix: match bullet markers even when preceded by leading whitespace.
+    // Previous v9 check used `raw` with `^[•...]` which failed when the PDF
+    // extraction put 5+ spaces of indent before the bullet character.
+    const isBullet  = /^\s*[•\-–—*·●∙▪\uf0b7\uf0a7]/.test(raw);
+    const looksLikeAlarmPattern = ALARM_LINE_RX.test(clean);
+    // A line that looks like a line-wrap continuation of a previous line:
+    // starts with a lowercase letter, a digit (common for temperature/pressure
+    // values wrapped to their own line like "90°F (adj.)"), or a non-sentence-
+    // starting token like "scheduled", "for 10 minutes", "setpoint". Real
+    // paragraph starts begin with "The", "A", "To", "When", "If", "Once",
+    // etc. — capitalized sentence openers with a noun or verb following.
+    const startsWithLowercase = /^[a-z]/.test(clean);
+    const startsWithDigitOrSymbol = /^[\d°]/.test(clean);
+    const looksLikeContinuation = startsWithLowercase
+      || startsWithDigitOrSymbol
+      || /^(scheduled|setpoint|operating|commanded|value|limited|for\s+\d|and\s+after|after\s+the)/i.test(clean);
+
+    if (inAlarmBlock) {
+      if (isBullet || looksLikeAlarmPattern) {
+        alarmLines.push(clean);
+        continue;
+      }
+      // v10: line-wrap continuation of the previous alarm. Append to the
+      // last alarm with a space so the full threshold text is preserved.
+      if (looksLikeContinuation && alarmLines.length > 0) {
+        alarmLines[alarmLines.length - 1] = (alarmLines[alarmLines.length - 1] + ' ' + clean).replace(/\s+/g, ' ').trim();
+        continue;
+      }
+      // Any other line ends the alarm block. Fall through to normal
+      // condition/outcome routing for this line.
+      inAlarmBlock = false;
+    }
+
+    // Opportunistic alarm extraction outside a declared alarm block —
+    // matches "High X: If the Y is...", "X Fan Failure: ..." patterns that
+    // unambiguously look like alarm thresholds regardless of block context.
+    const isExplicitAlarmSentence =
+      /^(high|low)\s+\w+[\w\s\/]*?:/i.test(clean) ||
+      /\b(fan\s+failure|fan\s+in\s+hand|locally\s+switched\s+off)\b/i.test(clean);
+    if (isExplicitAlarmSentence) {
+      alarmLines.push(clean);
+      continue;
+    }
+
+    // v9: Route based on explicit IF/THEN state when we're inside one.
+    // This takes precedence over the heuristic classification below because
+    // the SoO author's structure is unambiguous here.
+    if (ifState === 'in_if') {
+      conditions.push(clean);
+      continue;
+    }
+    if (ifState === 'post_then') {
+      outcomes.push(clean);
+      continue;
+    }
+
+    // Condition bullets (IF block, heuristic — for bodies without explicit IF:)
+    const isCondition = isBullet || /^(not in |and |or |if )/i.test(clean);
+
+    // Outcome sentences
+    const isOutcome = /^(the (controller|unit|sa fan|ra fan|ea fan|oa damper|ra damper|ea damper|pump|valve|fan|boiler|hot water))/i.test(clean)
+      || /^(to prevent|when the |once the |note:|the setpoint|the speed)/i.test(clean);
+
+    if (isCondition && outcomes.length === 0) {
+      conditions.push(clean);
+    } else if (isOutcome || outcomes.length > 0) {
+      outcomes.push(clean);
+    } else {
+      // Ambiguous — if it looks like a sentence put it in outcomes
+      if (clean.length > 30 && /[a-z]/.test(clean[0])) outcomes.push(clean);
+      else conditions.push(clean);
+    }
+  }
+
+  // ── NLP pass: structural dedup using compromise ────────────────────────
+  // Collapse conditions/outcomes that share the same (verb, object)
+  // signature — catches "verify the damper opens" + "confirm damper
+  // operation". Keeps the longest variant in each group. Conservatively
+  // only runs when both the action AND object are non-null to avoid
+  // false merges on bare copular sentences.
+  const dedupByStructure = (arr) => {
+    if (typeof nlp === 'undefined' || arr.length < 2) return arr;
+    const byKey = new Map();
+    const noKey = [];
+    for (const line of arr) {
+      const sig = extractStructure(line);
+      if (!sig.action || !sig.object) { noKey.push(line); continue; }
+      const key = `${sig.action}::${sig.object}`;
+      const existing = byKey.get(key);
+      if (!existing || line.length > existing.length) byKey.set(key, line);
+    }
+    return [...byKey.values(), ...noKey];
+  };
+
+  const dedupedConditions = dedupByStructure(conditions);
+  const dedupedOutcomes   = dedupByStructure(outcomes);
+
+  // v9: textual dedup for condition lines that are near-duplicates. Many
+  // SoOs (B205-style) have structure:
+  //   IF:
+  //   • NOT in "Fire Mode", "Freeze Mode", "Smoke Control Mode"
+  //   • AND the unit's master schedule is set for occupancy...
+  //   OR IF:
+  //   • Not in "Fire Mode", "Freeze Mode", "Smoke Control Mode"   ← duplicate
+  //   • AND unit control is overridden by the operator
+  // Both IF branches repeat the exclusion list. Normalize to lowercase,
+  // strip leading conjunction/negation/punctuation, and collapse duplicates.
+  const normalizeForDedup = (s) => s
+    .toLowerCase()
+    .replace(/^(and|or|if|not)\s+/i, '')            // strip leading boolean
+    .replace(/^in\s+/i, '')                          // "in "Fire Mode"..." -> ""Fire Mode"..."
+    .replace(/["'"'`]/g, '')                         // strip all quote variants
+    .replace(/[.,;:\s]+$/g, '')                      // trailing punctuation
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const textDedup = (arr) => {
+    const seen = new Map();   // normalized → original (longer wins)
+    for (const line of arr) {
+      const k = normalizeForDedup(line);
+      if (!k) continue;
+      const prev = seen.get(k);
+      if (!prev || line.length > prev.length) seen.set(k, line);
+    }
+    return [...seen.values()];
+  };
+
+  const finalConditions = textDedup(dedupedConditions);
+  const finalOutcomes   = textDedup(dedupedOutcomes);
+
+  // Content-based alarms-only detection: if we captured alarm thresholds
+  // and nothing else meaningful, this section's only contribution is alarms.
+  const isAlarmsOnly = alarmLines.length > 0
+    && finalConditions.length === 0
+    && finalOutcomes.length <= 1;  // allow 1 stray outcome (e.g. a preamble sentence)
+
+  // Assemble readable check text
+  let text = `Verify ${name} operates correctly per SoO:`;
+  if (finalConditions.length) {
+    const conds = finalConditions.slice(0, 5).join('; ');
+    text += `\nConditions: ${conds}.`;
+  }
+  if (finalOutcomes.length) {
+    const outs = finalOutcomes.slice(0, 8).join(' ');
+    text += `\nExpected outcomes: ${outs}`;
+    if (!text.endsWith('.')) text += '.';
+  }
+  // Render a table if present
+  if (tableLines.length >= 3) {
+    text += `\nTable values: ` + tableLines.map(t => `${t.label} = ${t.value}`).join('; ') + '.';
+  }
+
+  return { checkText: text.trim(), alarmLines, tableLines, isAlarmsOnly };
+}
+
+// ── Main parser ───────────────────────────────────────────────────────────
+// Now async so it can await the semantic classifier and the dedup pass.
+// Falls back cleanly to regex-only behaviour if embeddings are disabled or
+// the model hasn't loaded yet.
+async function parseSoO(rawText) {
+  // IMPORTANT: keep the raw (indent-preserving) lines for header detection
+  // and body parsing — indent distinguishes flush-left section titles from
+  // mid-paragraph subheaders like "whenever:" and bulleted alarm items.
+  const rawLines = rawText.split('\n');
+  const lines    = rawLines.map(l => l.trim());
+  const result = { functional: [], alarms: [] };
+
+  // Pass 1: detect all section headers, passing the ORIGINAL raw line to
+  // isHeaderLine so it can check indentation.
+  const sections = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (isHeaderLine(rawLines[i])) {
+      sections.push({ header: lines[i], startLine: i });
+    }
+  }
+  for (let s = 0; s < sections.length; s++) {
+    sections[s].endLine = s + 1 < sections.length ? sections[s + 1].startLine : lines.length;
+  }
+
+  console.log(`=== Detected ${sections.length} section headers ===`);
+  sections.forEach(s => console.log(`  [${s.startLine}] "${s.header}"`));
+
+  // Pass 2: classify and extract
+  const groupMap = new Map();
+  let semanticRescues = 0;
+  let skippedCount = 0;
+
+  for (const sec of sections) {
+    let group = classifySection(sec.header);
+    if (!group) { skippedCount++; continue; }
+
+    // Pass the RAW (indent-preserving) body lines to buildCheckText so it
+    // can detect indented alarm-block items vs flush-left paragraph starts.
+    const bodyLines = rawLines.slice(sec.startLine + 1, sec.endLine);
+    const { checkText, alarmLines, isAlarmsOnly } = buildCheckText(sec.header, bodyLines);
+
+    // Always collect alarms
+    for (const al of alarmLines) {
+      if (!result.alarms.includes(al)) result.alarms.push(al);
+    }
+
+    // Skip purely-alarm sections (header matched ALARM_ONLY_RX) or sections
+    // that, after parsing their content, contain only alarm thresholds
+    // (isAlarmsOnly from buildCheckText).
+    if (group === '_alarms' || group === null) { skippedCount++; continue; }
+    if (isAlarmsOnly) {
+      console.log(`  [alarms-only by content] "${sec.header}" — ${alarmLines.length} alarm(s), 0 functional content`);
+      skippedCount++;
+      continue;
+    }
+
+    // For _misc sections — first try the semantic classifier. If MiniLM
+    // can confidently route the section into a real PM category, use that.
+    // Otherwise fall back to the old "Other Checks" bucket (and still
+    // require at least a bit of real body content).
+    if (group === '_misc') {
+      const semanticGroup = await classifySectionSemantic(sec.header);
+      if (semanticGroup) {
+        console.log(`  [semantic rescue] "${sec.header}" → ${semanticGroup}`);
+        semanticRescues++;
+        group = semanticGroup;
+      } else {
+        if (bodyLines.filter(l => l.trim().length > 20).length < 2) continue;
+        group = 'Other Checks';
+      }
+    }
+
+    if (!groupMap.has(group)) groupMap.set(group, []);
+    groupMap.get(group).push(checkText);
+  }
+
+  if (semanticRescues > 0) {
+    console.log(`=== Semantic layer rescued ${semanticRescues} section(s) from "Other Checks" ===`);
+  }
+
+  // Pass 3: full-document alarm sweep
+  for (const raw of lines) {
+    const clean = raw.replace(/^[•\-–—*·●∙▪\uf0b7\uf0a7]\s*/, '').trim();
+    if (clean.length < 20 || clean.length > 200) continue;
+    const isAlarmBullet = /^[•\-]\s*(high|low|sa fan|ra fan|ea fan|pump|boiler|radiant)/i.test(raw);
+    const hasAlarmWord  = /\balarm\b/i.test(clean) && (clean.includes(':') || /fail|hand|switch/i.test(clean));
+    if ((isAlarmBullet || hasAlarmWord) && !result.alarms.includes(clean)) {
+      result.alarms.push(clean);
+    }
+  }
+
+  // Deduplicate alarms
+  result.alarms = [...new Set(result.alarms)]
+    .filter(a => a.length > 15 && a.length < 220)
+    .map(a => a.replace(/:?\s*$/, '').trim())
+    .slice(0, 60);
+
+  // Pass 4: semantic dedup of checks within each group. This catches
+  // paraphrased duplicates that survived the per-section structural pass
+  // — e.g. two different SoO sections that describe the same check using
+  // different wording. No-op if embeddings are disabled.
+  const grouped = Object.fromEntries(groupMap);
+  const deduped = await dedupeChecksSemantic(grouped);
+
+  // Pass 5: assemble functional sections in canonical PM order
+  const groupOrder = [
+    'Safety and Smoke Purge Modes',
+    'Normal Operating Modes',
+    'Startup Sequence',
+    'Fans',
+    'Pumps',
+    'Temperature and Coil Control',
+    'Pressure and Flow Control',
+    'Dehumidification Control',
+    'Other Checks',
+  ];
+
+  for (const grp of groupOrder) {
+    const checks = deduped[grp];
+    if (checks && checks.length) {
+      result.functional.push({ subsection: grp, checks });
+    }
+  }
+
+  const totalChecks = result.functional.reduce((n, s) => n + s.checks.length, 0);
+  console.log(`=== [v9] Parser summary ===`);
+  console.log(`  Total headers detected:  ${sections.length}`);
+  console.log(`  Real sections processed: ${sections.length - skippedCount}`);
+  console.log(`  Functional checks:       ${totalChecks}`);
+  console.log(`  Alarm thresholds:        ${result.alarms.length}`);
+  result.functional.forEach(s => console.log(`  [${s.subsection}] ${s.checks.length} check(s)`));
+
+  return result;
+}
+
+// ── Build checklist ───────────────────────────────────────────────────────
+async function buildChecklist(sooText, inputsCsv, outputsCsv, building, unitId) {
+  const parsed  = await parseSoO(sooText);
+  const inputs  = inputsCsv  ? parseCSV(inputsCsv)  : [];
+  const outputs = outputsCsv ? parseCSV(outputsCsv) : [];
+
+  const sections = [];
+
+  // Panel PM
+  sections.push({
+    id: 'panel', name: 'Panel PM', color: '#3d8b2f', type: 'checklist',
+    items: [
+      { id:'pp1', text:'Panel clean of debris' },
+      { id:'pp2', text:'Tighten all controller connections' },
+      { id:'pp3', text:'Tighten all terminal block connections' },
+      { id:'pp4', text:'Cabinet locking mechanism in working condition' },
+      { id:'pp5', text:'Cabinet is dry / ventilated with minimal dust and debris' },
+      { id:'pp6', text:'Confirm no excessive heat present from power supplies' },
+      { id:'pp7', text:'Verify and record 24V power supplies are in range' },
+      { id:'pp8', text:'Confirm no LED fault patterns in Edge / Controller' },
+      { id:'pp9', text:'Confirm no LED fault patterns in NRIO / I/O modules' },
+    ]
+  });
+
+  // Device Info
+  sections.push({
+    id: 'device', name: 'Device Information and Health', color: '#1a7db5', type: 'device',
+    items: [
+      { id:'di1', text:'Device Name',                     type:'info' },
+      { id:'di2', text:'Device IP Address',               type:'info' },
+      { id:'di3', text:'Device Manufacturer',             type:'info' },
+      { id:'di4', text:'Firmware Version',                type:'info' },
+      { id:'di5', text:'Device CPU Usage',                type:'info' },
+      { id:'di6', text:'Confirm version matches Supervisor' },
+      { id:'di7', text:'Confirm communication on Niagara network' },
+      { id:'di8', text:'Confirm time sync is correct' },
+    ]
+  });
+
+  // Input Validation
+  sections.push({
+    id: 'inputs', name: 'Input Validation / Calibration', color: '#d4622a', type: 'table',
+    columns: ['Point Name', 'BAS Reading', 'Actual Reading', 'Calibration Offset'],
+    rows: inputs.map((p, i) => ({ id: 'iv'+i, point: p }))
+  });
+
+  // Output Validation
+  sections.push({
+    id: 'outputs', name: 'Output Validation', color: '#d4622a', type: 'table',
+    columns: ['Point Name', 'Point Setup', 'BAS Value', 'Actual Value', 'Notes'],
+    rows: outputs.map((p, i) => ({ id: 'ov'+i, point: p }))
+  });
+
+  // Functional Checks — one check item per named subsection (e.g. Fire Mode, SA Fan, etc.)
+  let subsections = parsed.functional
+    .map((sub, si) => ({
+      name: sub.subsection,
+      items: sub.checks.map((c, ci) => ({ id:`fc${si}_${ci}`, text: c, screenshot: true }))
+    }))
+    .filter(s => s.items.length > 0);
+
+  if (!subsections.length) {
+    subsections = [{ name: 'General', items: [
+      { id:'fc0', text:'Verify all control sequences operate per Sequence of Operations', screenshot: true }
+    ]}];
+  }
+
+  sections.push({
+    id: 'functional', name: 'AHU Functional Checks', color: '#7a3590', type: 'functional',
+    subsections
+  });
+
+  // Trending & Alarms — built entirely from what was parsed in the SoO
+  const alarmItems = [
+    { id:'ta0', text:'Verify trending is current for the last 24 hrs and accessible from front end', screenshot: false }
+  ];
+
+  // Only add alarms actually found in this document
+  parsed.alarms.forEach((a, i) => {
+    // Clean up the text: strip trailing ":" artifacts, skip pure noise
+    const text = a.replace(/:\s*$/, '').trim();
+    if (text.length > 10) alarmItems.push({ id:'al'+i, text, screenshot: false });
+  });
+
+  alarmItems.push({
+    id: 'al_fin',
+    text: 'Confirm and acknowledge/clear ALL alarms from alarms page on supervisor. Release any overrides made during PM.',
+    screenshot: false
+  });
+
+  // Dynamic section name based on equipment type detected in the SoO
+  const equipLabel = /boiler|heating\s*plant/i.test(sooText)
+    ? 'Heating Plant'
+    : /rtu/i.test(sooText) ? 'RTU'
+    : /ahu/i.test(sooText) ? 'AHU'
+    : 'Equipment';
+
+  sections.push({
+    id: 'alarms',
+    name: `Trending and Alarms`,
+    color: '#2a7a7a',
+    type: 'checklist',
+    items: alarmItems.map(a => ({ ...a, screenshot: false }))
+  });
+
+  return {
+    title: `Building ${building} — ${unitId} Preventative Maintenance`,
+    date: new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' }),
+    sections
+  };
+}
+
+// ── Generate ──────────────────────────────────────────────────────────────
+async function generate() {
+  if (!fdata.soo) { showErr('Please upload a Sequence of Operations PDF first.'); return; }
+  const building = document.getElementById('building').value || '[Building]';
+  const unitId   = document.getElementById('unit-id').value   || '[Unit ID]';
+  const techName = document.getElementById('tech-name').value || '';
+
+  document.getElementById('btn-gen').disabled = true;
+  document.getElementById('err').style.display = 'none';
+
+  try {
+    setProgress(true, 'Reading PDF...', 10);
+    const sooText = await extractPdfText(fdata.soo);
+    setLog(`Extracted ${sooText.length.toLocaleString()} characters · ${sooText.split('\n').length} lines`);
+
+    // Kick off the MiniLM load. First run this downloads ~25MB and takes
+    // 10–30s; subsequent runs read from IndexedDB and resolve in <1s.
+    // If the model fails to load (no network on first run, etc.) the
+    // pipeline gracefully falls back to regex-only parsing.
+    setProgress(true, 'Preparing semantic model...', 25);
+    await tick();
+    try {
+      await loadEmbedder(msg => setLog(msg));
+    } catch (err) {
+      console.warn('Embedder failed to load, continuing with regex-only pipeline:', err);
+      setLog('Semantic model unavailable — using regex-only parsing');
+    }
+
+    setProgress(true, 'Parsing Sequence of Operations...', 55);
+    await tick();
+    const data = await buildChecklist(sooText, fdata.inp, fdata.out, building, unitId);
+
+    const fcCount = data.sections.find(s=>s.id==='functional')?.subsections?.reduce((n,s)=>n+s.items.length,0) || 0;
+    const alCount = data.sections.find(s=>s.id==='alarms')?.items?.length || 0;
+    setLog(`✓ Found ${fcCount} functional checks across ${data.sections.find(s=>s.id==='functional')?.subsections?.length||0} sections · ${alCount} alarm items — check browser console for details`);
+
+    setProgress(true, 'Rendering checklist...', 85);
+    await tick();
+
+    setProgress(false);
+    render(data, techName);
+
+  } catch(e) {
+    setProgress(false);
+    showErr('Error: ' + e.message);
+    document.getElementById('btn-gen').disabled = false;
+  }
+}
+
+const tick = () => new Promise(r => setTimeout(r, 60));
+
+// ── Render ────────────────────────────────────────────────────────────────
+function render(data, techName) {
+  const out = document.getElementById('output');
+  out.style.display = 'block';
+  out.innerHTML = '';
+
+  let total = 0;
+  data.sections.forEach(s => {
+    if (s.type==='checklist'||s.type==='device') total += (s.items||[]).filter(i=>i.type!=='info').length;
+    if (s.type==='functional') s.subsections?.forEach(sub => total += sub.items.length);
+  });
+
+  out.innerHTML = `
+    <div class="cl-header">
+      <div>
+        <div class="cl-title">${data.title}</div>
+        <div class="cl-meta">Generated ${data.date} &nbsp;·&nbsp; Parsed locally, no data transmitted</div>
+      </div>
+      <button class="btn-print" onclick="window.print()">🖨&nbsp; Print / Save PDF</button>
+    </div>
+    <div class="progress-bar-row">
+      <div class="pb-label"><span id="done-n">0</span> of ${total} items complete</div>
+      <div class="pb-track"><div class="pb-fill" id="done-bar" style="width:0%"></div></div>
+      <div class="pb-pct" id="done-pct">0%</div>
+    </div>`;
+
+  data.sections.forEach(sec => {
+    const el = document.createElement('div');
+    el.className = 'section';
+    el.innerHTML = buildSection(sec);
+    out.appendChild(el);
+    el.querySelector('.sec-head').addEventListener('click', () => el.classList.toggle('collapsed'));
+  });
+
+  out.innerHTML += `
+    <div class="signoff">
+      <div class="so-field"><label>Date Completed</label><input type="text" value="${new Date().toLocaleDateString()}"></div>
+      <div class="so-field"><label>Technician Signature</label><input type="text" placeholder="${techName || 'Full name'}"></div>
+    </div>`;
+
+  // Wire checkboxes — FIX 1: no strikethrough, just bg change
+  out.querySelectorAll('.cb').forEach(cb => cb.addEventListener('click', () => {
+    cb.classList.toggle('on');
+    // Only add 'done' for the subtle background — CSS does NOT strikethrough .done
+    cb.closest('.item')?.classList.toggle('done', cb.classList.contains('on'));
+    updateProgress();
+  }));
+
+  out.querySelectorAll('.ss-zone').forEach(wireSSZone);
+}
+
+function buildSection(sec) {
+  const count = countItems(sec);
+  let body = '';
+  if (sec.type==='checklist'||sec.type==='device') body = renderItems(sec.items||[]);
+  else if (sec.type==='table')      body = renderTable(sec);
+  else if (sec.type==='functional') body = renderFunctional(sec);
+
+  body += `<div class="tn"><label>Technician Notes</label><textarea placeholder="Add notes for this section..."></textarea></div>`;
+
+  return `
+    <div class="sec-head">
+      <div class="sec-pill" style="background:${sec.color||'#3d8b2f'}"></div>
+      <div class="sec-name">${sec.name}</div>
+      <div class="sec-badge">${count} items</div>
+      <div class="sec-chev">▾</div>
+    </div>
+    <div class="sec-divider"></div>
+    <div class="sec-body">${body}</div>`;
+}
+
+function renderItems(items) {
+  return items.map(item => {
+    if (item.type === 'info') return `
+      <div class="item">
+        <div></div>
+        <div>
+          <div class="item-info-label">${item.text}</div>
+          <input class="item-info-input" type="text" placeholder="Enter value">
+        </div>
+      </div>`;
+
+    // Format multi-line check text — split on \n and style each line
+    const lines = item.text.split('\n').filter(Boolean);
+    const firstLine = lines[0] || '';
+    const detailLines = lines.slice(1);
+    const detailHtml = detailLines.length
+      ? `<div class="item-details">${detailLines.map(l => {
+          if (l.startsWith('Conditions:'))   return `<div class="item-detail-conditions"><span class="detail-tag">Conditions</span> ${l.replace('Conditions:','').trim()}</div>`;
+          if (l.startsWith('Expected outcomes:')) return `<div class="item-detail-outcomes"><span class="detail-tag">Outcomes</span> ${l.replace('Expected outcomes:','').trim()}</div>`;
+          return `<div class="item-detail-line">${l}</div>`;
+        }).join('')}</div>`
+      : '';
+
+    const ss = item.screenshot ? `
+      <div class="ss-zone" data-ss-id="${item.id}">
+        <div class="ss-empty">
+          <span class="ss-label">📷 Click or drag to attach screenshot</span>
+        </div>
+        <input type="file" class="hidden" accept="image/*" multiple>
+      </div>` : '';
+
+    return `
+      <div class="item">
+        <div class="cb"></div>
+        <div>
+          <div class="item-text">${firstLine}</div>
+          ${detailHtml}
+          ${ss}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function renderTable(sec) {
+  const cols = sec.columns || ['Point Name','BAS','Actual','Calibration'];
+  const rows = sec.rows || [];
+  if (!rows.length) return `<div style="padding:20px 20px;font-size:13px;color:var(--text-light)">No points found — upload a CSV to populate this table.</div>`;
+  return `<div class="tbl-wrap"><table>
+    <thead><tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr></thead>
+    <tbody>${rows.map(r=>`<tr>
+      <td class="td-name">${r.point}</td>
+      ${cols.slice(1).map(()=>`<td><input class="tbl-input" type="text" placeholder="—"></td>`).join('')}
+    </tr>`).join('')}</tbody>
+  </table></div>`;
+}
+
+function renderFunctional(sec) {
+  return (sec.subsections||[]).map(sub => `
+    <div class="subsec">${sub.name}</div>
+    ${renderItems(sub.items||[])}
+  `).join('');
+}
+
+function countItems(sec) {
+  if (sec.type==='checklist'||sec.type==='device') return (sec.items||[]).length;
+  if (sec.type==='table') return (sec.rows||[]).length;
+  if (sec.type==='functional') return (sec.subsections||[]).reduce((n,s)=>n+(s.items||[]).length,0);
+  return 0;
+}
+
+function updateProgress() {
+  const checked = document.querySelectorAll('.cb.on').length;
+  const total   = document.querySelectorAll('.cb').length;
+  const pct     = total ? Math.round(checked/total*100) : 0;
+  const n  = document.getElementById('done-n');
+  const b  = document.getElementById('done-bar');
+  const p  = document.getElementById('done-pct');
+  if(n) n.textContent = checked;
+  if(b) b.style.width = pct + '%';
+  if(p) p.textContent = pct + '%';
+}
+
+function wireSSZone(zone) {
+  const inp = zone.querySelector('input[type="file"]');
+
+  // Click on empty state → open file picker
+  zone.addEventListener('click', e => {
+    if (e.target.closest('.ss-btn') || e.target.closest('.ss-tab')) return;
+    if (!zone.classList.contains('has-img')) inp?.click();
+  });
+
+  // Drag and drop
+  zone.addEventListener('dragover',  e => { e.preventDefault(); zone.classList.add('over'); });
+  zone.addEventListener('dragleave', e => { if (!zone.contains(e.relatedTarget)) zone.classList.remove('over'); });
+  zone.addEventListener('drop', e => {
+    e.preventDefault();
+    zone.classList.remove('over');
+    handleDrop(e.dataTransfer.files, zone);
+  });
+
+  inp?.addEventListener('change', e => handleDrop(e.target.files, zone));
+}
+
+function handleDrop(files, zone) {
+  if (!files?.length) return;
+  const inp = zone.querySelector('input[type="file"]');
+
+  // Build object URLs for all files
+  const existing = zone._ssImages || [];
+  const newImgs  = Array.from(files).map(f => ({ url: URL.createObjectURL(f), name: f.name }));
+  const allImgs  = [...existing, ...newImgs];
+  zone._ssImages = allImgs;
+
+  renderSSViewer(zone, allImgs, 0, inp);
+}
+
+function renderSSViewer(zone, images, activeIdx, inp) {
+  zone.classList.add('has-img');
+  zone.classList.remove('over');
+  zone.innerHTML = '';
+
+  // Toolbar
+  const toolbar = document.createElement('div');
+  toolbar.className = 'ss-toolbar';
+
+  // Tab per image
+  images.forEach((img, i) => {
+    const tab = document.createElement('div');
+    tab.className = 'ss-tab' + (i === activeIdx ? ' active' : '');
+    // Shorten filename
+    const name = img.name.length > 20 ? img.name.slice(0, 18) + '…' : img.name;
+    tab.textContent = `📷 ${i + 1}. ${name}`;
+    tab.addEventListener('click', () => renderSSViewer(zone, images, i, inp));
+    toolbar.appendChild(tab);
+  });
+
+  // Right-side buttons
+  const right = document.createElement('div');
+  right.className = 'ss-toolbar-right';
+
+  // Add more button
+  const addBtn = document.createElement('div');
+  addBtn.className = 'ss-btn';
+  addBtn.textContent = '+ Add';
+  addBtn.addEventListener('click', () => inp?.click());
+  right.appendChild(addBtn);
+
+  // Remove current button
+  const delBtn = document.createElement('div');
+  delBtn.className = 'ss-btn danger';
+  delBtn.textContent = '✕ Remove';
+  delBtn.addEventListener('click', () => {
+    images.splice(activeIdx, 1);
+    zone._ssImages = images;
+    if (!images.length) {
+      // Reset back to empty state
+      zone.classList.remove('has-img');
+      zone.innerHTML = `
+        <div class="ss-empty">
+          <span class="ss-label">📷 Click or drag to attach screenshot</span>
+        </div>`;
+      zone.appendChild(inp);
+      wireSSZone(zone);
+    } else {
+      renderSSViewer(zone, images, Math.min(activeIdx, images.length - 1), inp);
+    }
+  });
+  right.appendChild(delBtn);
+  toolbar.appendChild(right);
+  zone.appendChild(toolbar);
+
+  // Image viewer (resizable)
+  const viewer = document.createElement('div');
+  viewer.className = 'ss-viewer';
+
+  const imgEl = document.createElement('img');
+  imgEl.src = images[activeIdx].url;
+  imgEl.alt = images[activeIdx].name;
+  imgEl.draggable = false;
+  viewer.appendChild(imgEl);
+
+  // Resize hint
+  const hint = document.createElement('div');
+  hint.className = 'ss-resize-hint';
+  hint.textContent = '↕ drag to resize';
+  viewer.appendChild(hint);
+
+  zone.appendChild(viewer);
+
+  // Keep file input attached
+  if (inp) {
+    inp.value = '';
+    zone.appendChild(inp);
+    inp.addEventListener('change', e => handleDrop(e.target.files, zone), { once: true });
+  }
+}
+
+function setProgress(show, label='', pct=0) {
+  document.getElementById('progress').style.display = show ? 'block' : 'none';
+  if (show) {
+    document.getElementById('prog-label').textContent = label;
+    document.getElementById('prog-fill').style.width  = pct + '%';
+  }
+}
+function setLog(msg) { const el = document.getElementById('prog-log'); if(el) el.textContent = msg; }
+function showErr(msg) {
+  const e = document.getElementById('err');
+  e.textContent = '⚠ ' + msg;
+  e.style.display = 'block';
+}
+</script>
+</body>
+</html>
