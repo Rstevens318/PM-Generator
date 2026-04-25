@@ -4,12 +4,39 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>BAS PM Checklist Generator</title>
+<!--
+  ════════════════════════════════════════════════════════════════════════════
+  AIRGAPPED / OFFLINE SETUP
+  ════════════════════════════════════════════════════════════════════════════
+  On a machine with internet access, run:
+    chmod +x download-offline-deps.sh && ./download-offline-deps.sh
+  Then switch the three <script> tags below to their LOCAL variants:
+
+  CDN  (default, internet required on first run):
+    pdf.js  → https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js
+    worker  → set in JS:  pdfjsLib.GlobalWorkerOptions.workerSrc = '<CDN URL>'
+    nlp     → https://unpkg.com/compromise@14.14.0/builds/compromise.min.js
+    xfmr    → https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/...
+
+  LOCAL (airgapped, after running download-offline-deps.sh):
+    pdf.js  → ./libs/pdfjs/pdf.min.js
+    worker  → set in JS:  pdfjsLib.GlobalWorkerOptions.workerSrc = './libs/pdfjs/pdf.worker.min.js'
+    nlp     → ./libs/compromise.min.js
+    xfmr    → ./libs/transformers/transformers.min.js  (type="module" import)
+
+  The semantic embedding model (MiniLM, ~25 MB) is still fetched from Hugging
+  Face CDN on the very first run and cached in IndexedDB.  On a fully airgapped
+  machine the model will not load; the app automatically falls back to a
+  Jaccard word-overlap deduplication that handles the most common duplicate
+  patterns without requiring any network access.
+  ════════════════════════════════════════════════════════════════════════════
+-->
+<!-- pdf.js — AIRGAPPED: change src to "./libs/pdfjs/pdf.min.js" -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<!-- compromise: lightweight in-browser NLP for verb/noun/phrase extraction (~250KB) -->
+<!-- compromise: lightweight NLP (~250KB) — AIRGAPPED: change src to "./libs/compromise.min.js" -->
 <script src="https://unpkg.com/compromise@14.14.0/builds/compromise.min.js"></script>
-<!-- Transformers.js: runs MiniLM sentence-embedding model locally in the browser.
-     First load downloads ~25MB of model weights from Hugging Face CDN and caches
-     them in IndexedDB; subsequent loads are instant and fully offline. -->
+<!-- Transformers.js: MiniLM sentence-embedding model, cached in IndexedDB after first load.
+     AIRGAPPED: change the import path to './libs/transformers/transformers.min.js' -->
 <script type="module">
   import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js';
   // Cache model in browser IndexedDB so subsequent page loads work offline
@@ -791,6 +818,7 @@ tr:hover td { background: #fafbf9; }
 </div>
 
 <script>
+// AIRGAPPED: replace the CDN URL with './libs/pdfjs/pdf.worker.min.js'
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -967,12 +995,90 @@ async function classifySectionSemantic(headerText) {
   return best.score >= NLP_CONFIG.CLASSIFY_THRESHOLD ? best.group : null;
 }
 
+// ── Jaccard-based dedup helpers (offline / no-embedder fallback) ──────────
+// These run when MiniLM is unavailable (airgapped network or first-run with
+// no internet). Jaccard word-overlap is much weaker than cosine similarity
+// on sentence embeddings, so we expand HVAC abbreviations first to avoid
+// missing synonyms ("SA Fan" vs "Supply Air Fan"), then strip boilerplate
+// that would inflate similarity scores for unrelated checks.
+function jaccardSim(a, b) {
+  const words = s => new Set(s.split(/\s+/).filter(w => w.length > 2));
+  const setA = words(a), setB = words(b);
+  const intersection = [...setA].filter(w => setB.has(w)).length;
+  const union = new Set([...setA, ...setB]).size;
+  return union === 0 ? 0 : intersection / union;
+}
+
+function normalizeCheckHeader(h) {
+  return h
+    .toLowerCase()
+    // Expand common HVAC abbreviations so synonyms compare equal
+    .replace(/\bsa\b/g, 'supply air')
+    .replace(/\bra\b/g, 'return air')
+    .replace(/\bea\b/g, 'exhaust air')
+    .replace(/\boa\b/g, 'outdoor air')
+    .replace(/\bma\b/g, 'mixed air')
+    .replace(/\bchw\b/g, 'chilled water')
+    .replace(/\bhw\b/g, 'hot water')
+    .replace(/\bahu\b/g, 'air handling unit')
+    .replace(/\bvav\b/g, 'variable air volume')
+    .replace(/\bvfd\b/g, 'variable frequency drive')
+    .replace(/\brtu\b/g, 'rooftop unit')
+    // Strip "Verify … operates correctly per SoO:" boilerplate
+    .replace(/\bverify\b/g, '')
+    .replace(/\boperates?\s+correctly\b/g, '')
+    .replace(/\bper\s+so+\b/g, '')
+    .replace(/\bsequence\s+of\s+operations?\b/g, '')
+    // Strip generic structural words that don't distinguish checks
+    .replace(/\b(control|operation|sequence|mode|system|unit|the|a|an|and|or|in|of|for|to|from|with|is|are)\b/g, '')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+// Jaccard dedup — used as fallback when semantic embeddings are unavailable.
+// threshold 0.55 empirically catches "SA Fan Operation" vs "Supply Air Fan"
+// while keeping distinct checks like "SA Fan" vs "RA Fan" separate (they
+// share only 1 of ~4 meaningful words after abbreviation expansion).
+function dedupeChecksJaccard(groupedChecks) {
+  const THRESHOLD = 0.55;
+  const out = {};
+  for (const [group, checks] of Object.entries(groupedChecks)) {
+    if (checks.length <= 1) { out[group] = checks; continue; }
+    const kept = [];
+    for (const check of checks) {
+      const header = normalizeCheckHeader(check.split('\n')[0]);
+      let dupIdx = -1;
+      for (let j = 0; j < kept.length; j++) {
+        if (jaccardSim(header, normalizeCheckHeader(kept[j].split('\n')[0])) >= THRESHOLD) {
+          dupIdx = j;
+          break;
+        }
+      }
+      if (dupIdx < 0) {
+        kept.push(check);
+      } else if (check.length > kept[dupIdx].length) {
+        kept[dupIdx] = check;
+      }
+    }
+    if (kept.length < checks.length) {
+      console.log(`  [dedup-jaccard] ${group}: ${checks.length} → ${kept.length} (removed ${checks.length - kept.length})`);
+    }
+    out[group] = kept;
+  }
+  return out;
+}
+
 // ── Semantic dedup of generated checks ───────────────────────────────────
 // Takes the final list of check strings (grouped by section) and collapses
 // near-duplicates using cosine similarity. Preserves the longest variant
 // of each cluster since it usually carries the most detail.
 async function dedupeChecksSemantic(groupedChecks) {
-  if (!_embedder) return groupedChecks;
+  // On airgapped networks or when the model hasn't loaded, fall back to
+  // Jaccard word-overlap dedup. It's less precise than MiniLM cosine
+  // similarity but still catches the most common duplicates (same section
+  // described twice with slightly different titles).
+  if (!_embedder) return dedupeChecksJaccard(groupedChecks);
   const out = {};
   for (const [group, checks] of Object.entries(groupedChecks)) {
     if (checks.length <= 1) { out[group] = checks; continue; }
@@ -1118,19 +1224,20 @@ function isDrawingSheetPage(page, items) {
   const widthIn  = vp.width  / 72;
   const heightIn = vp.height / 72;
   const longSide = Math.max(widthIn, heightIn);
-  const rot = page.rotate || 0;
   // Anything with a long side ≥ 20" is bigger than Letter/Legal/A4/Tabloid
   const isLargeSheet = longSide >= 20;
-  // Rotated large pages are a strong signal (AutoCAD exports D-size rotated 270°)
-  const isRotatedLarge = isLargeSheet && (rot === 90 || rot === 270);
-  // Also check item X-spread — if items span a wide X range, columns are likely
   if (!items.length) return false;
-  const xs = items.map(it => it.transform[4]);
-  const xMin = Math.min(...xs);
-  const xMax = Math.max(...xs);
-  const xSpread = xMax - xMin;
-  const wideSpread = xSpread > 900;  // ~12.5" — wider than any normal page text area
-  return isLargeSheet && (isRotatedLarge || wideSpread);
+  // Use visual (rotation-aware) coordinates for X-spread. Raw PDF item
+  // coordinates are in the page's unrotated space; for a 270°-rotated drawing
+  // the raw X axis is the visual Y axis, making the raw spread meaningless.
+  // rotateItemsToVisualCoords() is hoisted (function declaration), so calling
+  // it here is safe even though it appears later in the file.
+  const vItems = rotateItemsToVisualCoords(items, vp);
+  const xs = vItems.map(it => it.vx);
+  const xSpread = Math.max(...xs) - Math.min(...xs);
+  // ~12.5" wider than any normal single-column page text area
+  const wideSpread = xSpread > 900;
+  return isLargeSheet && wideSpread;
 }
 
 // ── Minimal DBSCAN implementation ─────────────────────────────────────────
@@ -1204,7 +1311,8 @@ function rotateItemsToVisualCoords(items, viewport) {
 // this is what prevents column-to-column bleed. Within-sentence spacing
 // is < 10pt, so 30pt is a safe cutoff.
 function buildLineFragments(vItems) {
-  const Y_TOL = 3;
+  // 5pt Y tolerance handles AutoCAD/engineering font baseline variation better than 3pt
+  const Y_TOL = 5;
   const sorted = [...vItems].sort((a, b) => a.vy - b.vy);
   const lines = [];
   let current = [], currentY = null;
@@ -1232,15 +1340,30 @@ function buildLineFragments(vItems) {
     if (frag.length) fragments.push(frag);
   }
   return fragments.map(items => {
-    const xs     = items.map(it => it.vx);
-    const xEnds  = items.map(it => it.vx + (it.vw || 0));
-    const ys     = items.map(it => it.vy);
+    const xs      = items.map(it => it.vx);
+    const xEnds   = items.map(it => it.vx + (it.vw || 0));
+    const ys      = items.map(it => it.vy);
     const heights = items.map(it => it.vh || 10);
+    // Smart joining: only insert a space when there is a visible gap between
+    // adjacent text items. AutoCAD and some Word-to-PDF exporters emit text
+    // character-by-character or word-by-word; a naive join(' ') would produce
+    // "S u p p l y  A i r" or "Supply  Air" with double spaces. We measure
+    // the actual X gap and only add a space when the gap is > 1pt (inter-char
+    // spacing is typically < 1pt; inter-word gaps are typically 2–8pt).
+    let text = '';
+    for (let i = 0; i < items.length; i++) {
+      if (i > 0) {
+        const prev = items[i - 1];
+        const gap  = items[i].vx - (prev.vx + (prev.vw || 0));
+        if (gap > 1) text += ' ';
+      }
+      text += items[i].str;
+    }
     return {
-      xMin: Math.min(...xs),
-      xMax: Math.max(...xEnds),
-      y:    ys.reduce((a,b)=>a+b,0) / ys.length,
-      text: items.map(it => it.str).join(' ').trim(),
+      xMin:   Math.min(...xs),
+      xMax:   Math.max(...xEnds),
+      y:      ys.reduce((a, b) => a + b, 0) / ys.length,
+      text:   text.trim(),
       height: Math.max(...heights)
     };
   }).filter(f => f.text);
@@ -1301,15 +1424,19 @@ function clusterFragmentsIntoColumns(fragments) {
 }
 
 // ── Stage 3: filter to narrative columns only ─────────────────────────────
-// Drop columns that are (a) in the rightmost 15% of the page — these are
-// the title block, or (b) contain fewer than 3 fragments or < 2 fragments
-// longer than 40 chars — these are border markers, single labels, etc.
+// Drop columns that are (a) in the rightmost 12% of the page — these are
+// the title block, or (b) contain fewer than 2 fragments or no fragment
+// longer than 30 chars — these are border markers, single labels, etc.
+// Thresholds were relaxed from (3 frags, 2×40 chars) to (2 frags, 1×30
+// chars) so that engineering drawing SoO columns with short bullet lines
+// (e.g. "SA Fan shall run.") are not incorrectly dropped, which caused the
+// parser to fall back to flow mode and mix drawing text with the SoO text.
 function isNarrativeColumn(frags, pageWidth) {
-  if (frags.length < 3) return false;
+  if (frags.length < 2) return false;
   const meanX = frags.reduce((s, f) => s + f.xMin, 0) / frags.length;
-  if (meanX > pageWidth * 0.85) return false;
-  const longFrags = frags.filter(f => f.text.length > 40).length;
-  return longFrags >= 2;
+  if (meanX > pageWidth * 0.88) return false;
+  const longFrags = frags.filter(f => f.text.length > 30).length;
+  return longFrags >= 1;
 }
 
 // Common AutoCAD / AEC title-block labels. Any line exactly matching one
@@ -1518,7 +1645,10 @@ const GROUP_MAP = [
     patterns: [
       /sa\s*temp(erature)?\s*control/i, /sa\s*temp(erature)?\s*setpoint/i,
       /cool(ing)?\s*coil/i, /heat(ing)?\s*coil/i, /preheat\s*control/i,
-      /economizer/i, /humidif/i, /dehumidif/i,
+      /economizer/i,
+      // humidif (but NOT dehumidif) — dehumidification has its own category
+      // below and must be listed first in GROUP_MAP so it matches before this.
+      /(?<!de)humidif/i,
       /cold\s*deck/i, /hot\s*deck/i,
       /ma\/oa\s*(heating|cooling)/i, /ma\/ra\s*(heating|cooling)/i,
       /damper\s*operat/i, /building\s*hot\s*water/i,
@@ -2221,11 +2351,13 @@ async function buildChecklist(sooText, inputsCsv, outputsCsv, building, unitId) 
   ];
 
   // Only add alarms actually found in this document
-  parsed.alarms.forEach((a, i) => {
-    // Clean up the text: strip trailing ":" artifacts, skip pure noise
+  // Use a separate counter so skipped short entries don't create ID gaps
+  // or collisions (forEach index 'i' would skip numbers when entries are filtered).
+  let alarmIdx = 0;
+  for (const a of parsed.alarms) {
     const text = a.replace(/:\s*$/, '').trim();
-    if (text.length > 10) alarmItems.push({ id:'al'+i, text, screenshot: false });
-  });
+    if (text.length > 10) alarmItems.push({ id: `al${alarmIdx++}`, text, screenshot: false });
+  }
 
   alarmItems.push({
     id: 'al_fin',
