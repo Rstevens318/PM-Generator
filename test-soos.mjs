@@ -21,6 +21,7 @@ const PDF_FILES = [
   'B207_Split-Air AHU Sequence of Operation Rev 05.pdf',
   'CH3a3bSoo.pdf',
   'SecCHWPumpsSoO.pdf',
+  'B106_CHWP_SoO.pdf',
 ];
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -280,7 +281,7 @@ const GROUP_MAP = [
   { group: 'Normal Operating Modes',       patterns: [/occupied\s*mode/i,/unoccupied\s*mode/i,/bypass\s*mode/i,/optimal\s*start/i,/run\s*condition/i,/space\s*temp/i,/space\s*humid/i] },
   { group: 'Startup Sequence',             patterns: [/startup/i,/start[\s-]*up/i] },
   { group: 'Fans',                         patterns: [/\bsa\s*(and\s*ra\s*)?fan\b/i,/\bra\s*fan\b/i,/\bea\s*fan\b/i,/\bma\s*stir\s*fan\b/i,/\bfan\s*track/i] },
-  { group: 'Pumps',                        patterns: [/circ(ulation)?\s*pump/i,/reheat\s*pump/i,/re[\s-]*heat\s*(heating\s*)?pump/i,/radiant\s*(circuit\s*)?pump/i,/boiler/i,/heating\s*plant/i,/re[\s-]*heat\s*(heating\s*)?water/i,/chilled\s*water\s*pump/i,/secondary.*pump/i,/schwp/i,/condenser\s*water\s*(pump|flow)/i,/cooling\s*tower/i,/chiller.*sequence/i,/chiller.*operation/i] },
+  { group: 'Pumps',                        patterns: [/circ(ulation)?\s*pump/i,/reheat\s*pump/i,/re[\s-]*heat\s*(heating\s*)?pump/i,/radiant\s*(circuit\s*)?pump/i,/boiler/i,/heating\s*plant/i,/re[\s-]*heat\s*(heating\s*)?water/i,/chilled\s*water\s*pump/i,/secondary.*pump/i,/schwp/i,/condenser\s*water\s*(pump|flow)/i,/cooling\s*tower/i,/chiller.*sequenc/i,/chiller.*operation/i] },
   { group: 'Temperature and Coil Control', patterns: [/sa\s*temp(erature)?\s*control/i,/sa\s*temp(erature)?\s*setpoint/i,/cool(ing)?\s*coil/i,/heat(ing)?\s*coil/i,/preheat\s*control/i,/economizer/i,/(?<!de)humidif/i,/cold\s*deck/i,/hot\s*deck/i,/ma\/oa\s*(heating|cooling)/i,/ma\/ra\s*(heating|cooling)/i,/damper\s*operat/i,/building\s*hot\s*water/i,/temperature\s*reset/i,/trim\s*and\s*respond/i] },
   { group: 'Pressure and Flow Control',    patterns: [/duct\s*static/i,/static\s*pressure/i,/plenum\s*static/i,/minimum\s*oa/i,/min(imum)?\s*oa\s*control/i,/ra\s*fan\s*track/i,/smoke\s*purge/i,/unoccupied\s*(build|protect)/i] },
   { group: 'Dehumidification Control',     patterns: [/dehumidif/i] },
@@ -451,7 +452,7 @@ function buildCheckText(headerText, bodyLines) {
 
 // ── Jaccard dedup ─────────────────────────────────────────────────────────────
 function jaccardSim(a, b) {
-  const words = s => new Set(s.split(/\s+/).filter(w => w.length > 2));
+  const words = s => new Set(s.split(/\s+/).filter(w => w.length > 2 || /^\d+$/.test(w)));
   const setA = words(a), setB = words(b);
   const intersection = [...setA].filter(w => setB.has(w)).length;
   const union = new Set([...setA, ...setB]).size;
@@ -481,11 +482,7 @@ function dedupeChecksJaccard(groupedChecks) {
       let dupIdx = -1;
       for (let j = 0; j < kept.length; j++) {
         const keptHeader = normalizeCheckHeader(kept[j].split('\n')[0]);
-        const wordsOf = s => new Set(s.split(/\s+/).filter(w => w.length > 2));
-        const isSubset = (small, big) => [...small].every(w => big.has(w));
-        const hWords = wordsOf(header), kWords = wordsOf(keptHeader);
-        if (jaccardSim(header, keptHeader) >= THRESHOLD ||
-            isSubset(hWords, kWords) || isSubset(kWords, hWords)) {
+        if (jaccardSim(header, keptHeader) >= THRESHOLD) {
           dupIdx = j; break;
         }
       }
@@ -542,6 +539,8 @@ async function parseSoO(rawText) {
   result.alarms = [...new Set(result.alarms)]
     .filter(a => a.length > 15 && a.length < 220)
     .map(a => a.replace(/:?\s*$/, '').trim())
+    .sort((a, b) => b.length - a.length)
+    .filter((alarm, i, arr) => !arr.slice(0, i).some(longer => longer.startsWith(alarm)))
     .slice(0, 60);
 
   const grouped = Object.fromEntries(groupMap);

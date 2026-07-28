@@ -1002,7 +1002,7 @@ async function classifySectionSemantic(headerText) {
 // missing synonyms ("SA Fan" vs "Supply Air Fan"), then strip boilerplate
 // that would inflate similarity scores for unrelated checks.
 function jaccardSim(a, b) {
-  const words = s => new Set(s.split(/\s+/).filter(w => w.length > 2));
+  const words = s => new Set(s.split(/\s+/).filter(w => w.length > 2 || /^\d+$/.test(w)));
   const setA = words(a), setB = words(b);
   const intersection = [...setA].filter(w => setB.has(w)).length;
   const union = new Set([...setA, ...setB]).size;
@@ -1051,11 +1051,7 @@ function dedupeChecksJaccard(groupedChecks) {
       let dupIdx = -1;
       for (let j = 0; j < kept.length; j++) {
         const keptHeader = normalizeCheckHeader(kept[j].split('\n')[0]);
-        const wordsOf = s => new Set(s.split(/\s+/).filter(w => w.length > 2));
-        const isSubset = (small, big) => [...small].every(w => big.has(w));
-        const hWords = wordsOf(header), kWords = wordsOf(keptHeader);
-        if (jaccardSim(header, keptHeader) >= THRESHOLD ||
-            isSubset(hWords, kWords) || isSubset(kWords, hWords)) {
+        if (jaccardSim(header, keptHeader) >= THRESHOLD) {
           dupIdx = j;
           break;
         }
@@ -1645,7 +1641,7 @@ const GROUP_MAP = [
       /re[\s-]*heat\s*(heating\s*)?water/i,
       /chilled\s*water\s*pump/i, /secondary.*pump/i, /schwp/i,
       /condenser\s*water\s*(pump|flow)/i, /cooling\s*tower/i,
-      /chiller.*sequence/i, /chiller.*operation/i,
+      /chiller.*sequenc/i, /chiller.*operation/i,
     ]
   },
   {
@@ -2243,6 +2239,8 @@ async function parseSoO(rawText) {
   result.alarms = [...new Set(result.alarms)]
     .filter(a => a.length > 15 && a.length < 220)
     .map(a => a.replace(/:?\s*$/, '').trim())
+    .sort((a, b) => b.length - a.length)
+    .filter((alarm, i, arr) => !arr.slice(0, i).some(longer => longer.startsWith(alarm)))
     .slice(0, 60);
 
   // Pass 4: semantic dedup of checks within each group. This catches
