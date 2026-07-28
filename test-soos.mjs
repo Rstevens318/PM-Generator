@@ -278,7 +278,8 @@ async function extractPdfText(uint8arr) {
 // ── GROUP_MAP ─────────────────────────────────────────────────────────────────
 const GROUP_MAP = [
   { group: 'Safety and Smoke Purge Modes', patterns: [/fire\s*mode/i,/freeze\s*(mode|protect)/i,/smoke\s*(control|purge|detect|mode)/i,/low\s*temp(erature)?\s*(detect|protect)/i,/water\s*leak/i] },
-  { group: 'Normal Operating Modes',       patterns: [/occupied\s*mode/i,/unoccupied\s*mode/i,/bypass\s*mode/i,/optimal\s*start/i,/run\s*condition/i,/space\s*temp/i,/space\s*humid/i] },
+  { group: 'Run Conditions',                patterns: [/run\s*condition/i,/operating\s*condition/i] },
+  { group: 'Normal Operating Modes',       patterns: [/occupied\s*mode/i,/unoccupied\s*mode/i,/bypass\s*mode/i,/optimal\s*start/i,/space\s*temp/i,/space\s*humid/i] },
   { group: 'Startup Sequence',             patterns: [/startup/i,/start[\s-]*up/i] },
   { group: 'Fans',                         patterns: [/\bsa\s*(and\s*ra\s*)?fan\b/i,/\bra\s*fan\b/i,/\bea\s*fan\b/i,/\bma\s*stir\s*fan\b/i,/\bfan\s*track/i] },
   { group: 'Pumps',                        patterns: [/circ(ulation)?\s*pump/i,/reheat\s*pump/i,/re[\s-]*heat\s*(heating\s*)?pump/i,/radiant\s*(circuit\s*)?pump/i,/boiler/i,/heating\s*plant/i,/re[\s-]*heat\s*(heating\s*)?water/i,/chilled\s*water\s*pump/i,/secondary.*pump/i,/schwp/i,/condenser\s*water\s*(pump|flow)/i,/cooling\s*tower/i,/chiller.*sequenc/i,/chiller.*operation/i] },
@@ -287,7 +288,7 @@ const GROUP_MAP = [
   { group: 'Dehumidification Control',     patterns: [/dehumidif/i] },
 ];
 const ALARM_ONLY_RX = [/^monitoring/i,/^boiler\s*alarm/i,/^alarms?\s*shall/i,/^alarms?\s*:?\s*$/i];
-const SKIP_SECTION_RX = [/^run\s*condition.*requested/i,/^end\s*of\s*sequence/i,/^page\s*\d/i,/^see\s*(below|above|table)/i,/^note\s*:/i,/^modes\s*:/i];
+const SKIP_SECTION_RX = [/^end\s*of\s*sequence/i,/^page\s*\d/i,/^see\s*(below|above|table)/i,/^note\s*:/i,/^modes\s*:/i];
 
 function classifySection(headerText) {
   const h = headerText.trim();
@@ -547,7 +548,7 @@ async function parseSoO(rawText) {
   const deduped = dedupeChecksJaccard(grouped);
 
   const groupOrder = [
-    'Safety and Smoke Purge Modes','Normal Operating Modes','Startup Sequence',
+    'Safety and Smoke Purge Modes','Run Conditions','Normal Operating Modes','Startup Sequence',
     'Fans','Pumps','Temperature and Coil Control','Pressure and Flow Control',
     'Dehumidification Control','Other Checks',
   ];

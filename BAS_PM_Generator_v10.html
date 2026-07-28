@@ -862,9 +862,12 @@ const CATEGORY_CATALOG = [
   { group: 'Safety and Smoke Purge Modes', examples: [
       'fire mode shutdown', 'smoke purge operation', 'freeze protection',
       'low temperature detection', 'water leak detection', 'emergency shutdown' ]},
+  { group: 'Run Conditions', examples: [
+      'run conditions requested', 'system enable conditions', 'operating conditions',
+      'unit run enable', 'equipment enable logic' ]},
   { group: 'Normal Operating Modes', examples: [
       'occupied mode operation', 'unoccupied setback', 'after-hours bypass',
-      'optimal start routine', 'space temperature control', 'run condition check' ]},
+      'optimal start routine', 'space temperature control' ]},
   { group: 'Startup Sequence', examples: [
       'system startup sequence', 'equipment start order', 'initial power-up',
       'cold start routine' ]},
@@ -1615,10 +1618,16 @@ const GROUP_MAP = [
     ]
   },
   {
+    group: 'Run Conditions',
+    patterns: [
+      /run\s*condition/i, /operating\s*condition/i,
+    ]
+  },
+  {
     group: 'Normal Operating Modes',
     patterns: [
       /occupied\s*mode/i, /unoccupied\s*mode/i, /bypass\s*mode/i,
-      /optimal\s*start/i, /run\s*condition/i, /space\s*temp/i,
+      /optimal\s*start/i, /space\s*temp/i,
       /space\s*humid/i,
     ]
   },
@@ -1689,7 +1698,6 @@ const ALARM_ONLY_RX = [
 
 // Skip these entirely — not useful as checklist items
 const SKIP_SECTION_RX = [
-  /^run\s*condition.*requested/i,
   /^end\s*of\s*sequence/i,
   /^page\s*\d/i,
   /^see\s*(below|above|table)/i,
@@ -2253,6 +2261,7 @@ async function parseSoO(rawText) {
   // Pass 5: assemble functional sections in canonical PM order
   const groupOrder = [
     'Safety and Smoke Purge Modes',
+    'Run Conditions',
     'Normal Operating Modes',
     'Startup Sequence',
     'Fans',
