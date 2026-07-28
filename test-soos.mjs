@@ -9,7 +9,9 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist/legacy/build/pdf.mjs');
-GlobalWorkerOptions.workerSrc = '';   // disable worker for Node.js
+GlobalWorkerOptions.workerSrc = new URL(
+  './node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs', import.meta.url
+).href;
 
 // ── PDF files to test ────────────────────────────────────────────────────────
 const PDF_FILES = [
@@ -278,8 +280,8 @@ const GROUP_MAP = [
   { group: 'Normal Operating Modes',       patterns: [/occupied\s*mode/i,/unoccupied\s*mode/i,/bypass\s*mode/i,/optimal\s*start/i,/run\s*condition/i,/space\s*temp/i,/space\s*humid/i] },
   { group: 'Startup Sequence',             patterns: [/startup/i,/start[\s-]*up/i] },
   { group: 'Fans',                         patterns: [/\bsa\s*(and\s*ra\s*)?fan\b/i,/\bra\s*fan\b/i,/\bea\s*fan\b/i,/\bma\s*stir\s*fan\b/i,/\bfan\s*track/i] },
-  { group: 'Pumps',                        patterns: [/circ(ulation)?\s*pump/i,/reheat\s*pump/i,/re[\s-]*heat\s*(heating\s*)?pump/i,/radiant\s*(circuit\s*)?pump/i,/boiler/i,/heating\s*plant/i,/re[\s-]*heat\s*(heating\s*)?water/i] },
-  { group: 'Temperature and Coil Control', patterns: [/sa\s*temp(erature)?\s*control/i,/sa\s*temp(erature)?\s*setpoint/i,/cool(ing)?\s*coil/i,/heat(ing)?\s*coil/i,/preheat\s*control/i,/economizer/i,/(?<!de)humidif/i,/cold\s*deck/i,/hot\s*deck/i,/ma\/oa\s*(heating|cooling)/i,/ma\/ra\s*(heating|cooling)/i,/damper\s*operat/i,/building\s*hot\s*water/i] },
+  { group: 'Pumps',                        patterns: [/circ(ulation)?\s*pump/i,/reheat\s*pump/i,/re[\s-]*heat\s*(heating\s*)?pump/i,/radiant\s*(circuit\s*)?pump/i,/boiler/i,/heating\s*plant/i,/re[\s-]*heat\s*(heating\s*)?water/i,/chilled\s*water\s*pump/i,/secondary.*pump/i,/schwp/i,/condenser\s*water\s*(pump|flow)/i,/cooling\s*tower/i,/chiller.*sequence/i,/chiller.*operation/i] },
+  { group: 'Temperature and Coil Control', patterns: [/sa\s*temp(erature)?\s*control/i,/sa\s*temp(erature)?\s*setpoint/i,/cool(ing)?\s*coil/i,/heat(ing)?\s*coil/i,/preheat\s*control/i,/economizer/i,/(?<!de)humidif/i,/cold\s*deck/i,/hot\s*deck/i,/ma\/oa\s*(heating|cooling)/i,/ma\/ra\s*(heating|cooling)/i,/damper\s*operat/i,/building\s*hot\s*water/i,/temperature\s*reset/i,/trim\s*and\s*respond/i] },
   { group: 'Pressure and Flow Control',    patterns: [/duct\s*static/i,/static\s*pressure/i,/plenum\s*static/i,/minimum\s*oa/i,/min(imum)?\s*oa\s*control/i,/ra\s*fan\s*track/i,/smoke\s*purge/i,/unoccupied\s*(build|protect)/i] },
   { group: 'Dehumidification Control',     patterns: [/dehumidif/i] },
 ];
@@ -300,6 +302,7 @@ function isHeaderLine(line) {
   const originalIndent = line.length - line.trimStart().length;
   const t = line.trim();
   if (!t || t.length < 3 || t.length > 100) return false;
+  if (t.endsWith(':') && /^[a-z]/.test(t)) return false;
   if (originalIndent > 3) return false;
   if (/^[•\-–—*·●∙▪]/.test(t)) return false;
   if (/^(if:|or if:|and |not in |the |to |when |once |as |for |in |on |at )/i.test(t)) return false;
@@ -468,7 +471,7 @@ function normalizeCheckHeader(h) {
     .replace(/[^a-z0-9\s]/g,' ').replace(/\s+/g,' ').trim();
 }
 function dedupeChecksJaccard(groupedChecks) {
-  const THRESHOLD = 0.55;
+  const THRESHOLD = 0.70;
   const out = {};
   for (const [group, checks] of Object.entries(groupedChecks)) {
     if (checks.length <= 1) { out[group] = checks; continue; }
@@ -477,7 +480,12 @@ function dedupeChecksJaccard(groupedChecks) {
       const header = normalizeCheckHeader(check.split('\n')[0]);
       let dupIdx = -1;
       for (let j = 0; j < kept.length; j++) {
-        if (jaccardSim(header, normalizeCheckHeader(kept[j].split('\n')[0])) >= THRESHOLD) {
+        const keptHeader = normalizeCheckHeader(kept[j].split('\n')[0]);
+        const wordsOf = s => new Set(s.split(/\s+/).filter(w => w.length > 2));
+        const isSubset = (small, big) => [...small].every(w => big.has(w));
+        const hWords = wordsOf(header), kWords = wordsOf(keptHeader);
+        if (jaccardSim(header, keptHeader) >= THRESHOLD ||
+            isSubset(hWords, kWords) || isSubset(kWords, hWords)) {
           dupIdx = j; break;
         }
       }

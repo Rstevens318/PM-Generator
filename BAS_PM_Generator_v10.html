@@ -1041,7 +1041,7 @@ function normalizeCheckHeader(h) {
 // while keeping distinct checks like "SA Fan" vs "RA Fan" separate (they
 // share only 1 of ~4 meaningful words after abbreviation expansion).
 function dedupeChecksJaccard(groupedChecks) {
-  const THRESHOLD = 0.55;
+  const THRESHOLD = 0.70;
   const out = {};
   for (const [group, checks] of Object.entries(groupedChecks)) {
     if (checks.length <= 1) { out[group] = checks; continue; }
@@ -1050,7 +1050,12 @@ function dedupeChecksJaccard(groupedChecks) {
       const header = normalizeCheckHeader(check.split('\n')[0]);
       let dupIdx = -1;
       for (let j = 0; j < kept.length; j++) {
-        if (jaccardSim(header, normalizeCheckHeader(kept[j].split('\n')[0])) >= THRESHOLD) {
+        const keptHeader = normalizeCheckHeader(kept[j].split('\n')[0]);
+        const wordsOf = s => new Set(s.split(/\s+/).filter(w => w.length > 2));
+        const isSubset = (small, big) => [...small].every(w => big.has(w));
+        const hWords = wordsOf(header), kWords = wordsOf(keptHeader);
+        if (jaccardSim(header, keptHeader) >= THRESHOLD ||
+            isSubset(hWords, kWords) || isSubset(kWords, hWords)) {
           dupIdx = j;
           break;
         }
@@ -1638,6 +1643,9 @@ const GROUP_MAP = [
       /circ(ulation)?\s*pump/i, /reheat\s*pump/i, /re[\s-]*heat\s*(heating\s*)?pump/i,
       /radiant\s*(circuit\s*)?pump/i, /boiler/i, /heating\s*plant/i,
       /re[\s-]*heat\s*(heating\s*)?water/i,
+      /chilled\s*water\s*pump/i, /secondary.*pump/i, /schwp/i,
+      /condenser\s*water\s*(pump|flow)/i, /cooling\s*tower/i,
+      /chiller.*sequence/i, /chiller.*operation/i,
     ]
   },
   {
@@ -1652,6 +1660,7 @@ const GROUP_MAP = [
       /cold\s*deck/i, /hot\s*deck/i,
       /ma\/oa\s*(heating|cooling)/i, /ma\/ra\s*(heating|cooling)/i,
       /damper\s*operat/i, /building\s*hot\s*water/i,
+      /temperature\s*reset/i, /trim\s*and\s*respond/i,
     ]
   },
   {
@@ -1716,6 +1725,7 @@ function isHeaderLine(line) {
   const originalIndent = line.length - line.trimStart().length;
   const t = line.trim();
   if (!t || t.length < 3 || t.length > 100) return false;
+  if (t.endsWith(':') && /^[a-z]/.test(t)) return false;
 
   // Reject indented lines — real section headers are flush-left in both
   // flowing documents and drawing sheets. Mid-paragraph subheaders like
